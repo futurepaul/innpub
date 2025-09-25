@@ -17,6 +17,7 @@ export type GameHooks = {
   onPlayerPosition?: (position: { x: number; y: number; facing: FacingDirection }) => void;
   onConsoleMessage?: (message: string) => void;
   onHeadPosition?: (id: string, rect: { x: number; y: number; width: number; height: number } | null, facing: FacingDirection) => void;
+  onPlayerRooms?: (rooms: string[]) => void;
 };
 
 export type GameInstance = {
@@ -472,6 +473,7 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
       }
     }
 
+    const roomsChanged = !setsEqual(activeRooms, nextRooms);
     for (const roomName of nextRooms) {
       if (!activeRooms.has(roomName)) {
         hooks.onConsoleMessage?.(`Entered ${roomName}`);
@@ -485,6 +487,9 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     }
 
     activeRooms = nextRooms;
+    if (roomsChanged) {
+      hooks.onPlayerRooms?.(Array.from(nextRooms).sort());
+    }
   };
 
   clampToMap();
@@ -720,6 +725,7 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     }
     remotePlayers.clear();
     hooks.onHeadPosition?.("local", null, lastFacing);
+    hooks.onPlayerRooms?.([]);
   };
 
   const setInputCaptured = (captured: boolean) => {
@@ -750,6 +756,18 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     setAvatar,
     syncPlayers,
   };
+}
+
+function setsEqual(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) {
+    return false;
+  }
+  for (const value of a) {
+    if (!b.has(value)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 async function loadTiledMap(url: string): Promise<TiledMap> {

@@ -13,6 +13,7 @@ import {
   STATE_TRACK,
   AUDIO_TRACK,
   SPEAKING_TRACK,
+  ROOMS_TRACK,
 } from "./moqConnection";
 import { AudioCapture, isCaptureSupported } from "./audio/capture";
 import { AudioPlayback } from "./audio/playback";
@@ -25,7 +26,7 @@ export interface PlayerState {
   x: number;
   y: number;
   facing: FacingDirection;
-  room?: string;
+  rooms?: string[];
   speakingLevel?: number;
 }
 
@@ -43,9 +44,11 @@ interface RemoteSubscription {
   stateTrack: Moq.Track;
   audioTrack?: Moq.Track;
   speakingTrack?: Moq.Track;
+  roomsTrack?: Moq.Track;
   sourceKey: string;
   lastSeen: number;
   npub?: string;
+  pendingRooms?: string[];
 }
 
 interface LocalSession {
@@ -64,11 +67,13 @@ const sourcesByNpub = new Map<string, Set<string>>();
 const profiles = new Map<string, PlayerProfile>();
 const profileSubscriptions = new Map<string, { unsubscribe: () => void }>();
 const speakingLevels = new Map<string, number>();
+const roomsByNpub = new Map<string, string[]>();
 
 const remoteSubscriptions = new Map<string, RemoteSubscription>();
 const stateSubscribers = new Set<Moq.Track>();
 const audioSubscribers = new Set<Moq.Track>();
 const speakingSubscribers = new Set<Moq.Track>();
+const roomsSubscribers = new Set<Moq.Track>();
 
 let started = false;
 let pruneTimerId: ReturnType<typeof setInterval> | null = null;
@@ -89,6 +94,7 @@ let currentSpeakingLevel = 0;
 let lastSpeakingSentAt = 0;
 let beforeUnloadRegistered = false;
 let localAudioIdentity: string | null = null;
+let localRooms: string[] = [];
 
 const LOCAL_SOURCE_KEY = "local";
 const HEARTBEAT_INTERVAL_MS = 1000;
@@ -190,6 +196,54 @@ function broadcastSpeakingLevel(force = false) {
   }
 }
 
+function sendRooms(track: Moq.Track) {
+  try {
+    track.writeJson({ rooms: localRooms, ts: Date.now() });
+  } catch (error) {
+    console.warn("failed to write rooms", error);
+    roomsSubscribers.delete(track);
+  }
+}
+
+function broadcastRoomsUpdate(): void {
+  for (const track of [...roomsSubscribers]) {
+    sendRooms(track);
+  }
+}
+
+function intersectsRooms(a: readonly string[], b: readonly string[]): boolean {
+  if (!a.length || !b.length) {
+    return false;
+  }
+  for (const value of a) {
+    if (b.includes(value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function updateAudioMix(): void {
+  const local = localRooms;
+  for (const [path, subscription] of remoteSubscriptions) {
+    const npub = subscription.npub;
+    let remoteRooms: readonly string[] = [];
+    if (npub) {
+      const stored = roomsByNpub.get(npub);
+      if (stored) {
+        remoteRooms = stored;
+      } else {
+        const player = players.get(npub);
+        if (player?.rooms) {
+          remoteRooms = player.rooms;
+        }
+      }
+    }
+    const audible = npub ? intersectsRooms(local, remoteRooms) : false;
+    audioPlayback.setVolume(path, audible ? 1 : 0);
+  }
+}
+
 function now(): number {
   return typeof performance !== "undefined" ? performance.now() : Date.now();
 }
@@ -200,7 +254,7 @@ function stateChanged(a: PlayerState | null, b: PlayerState): boolean {
   if (Math.abs(a.x - b.x) > EPSILON) return true;
   if (Math.abs(a.y - b.y) > EPSILON) return true;
   if (a.facing !== b.facing) return true;
-  if ((a.room ?? "") !== (b.room ?? "")) return true;
+  if (!roomsEqual(a.rooms ?? [], b.rooms ?? [])) return true;
   return false;
 }
 
@@ -216,6 +270,20 @@ function withSpeakingLevel(state: PlayerState): PlayerState {
     return { ...state };
   }
   return { ...state, speakingLevel: level };
+}
+
+function withRooms(state: PlayerState): PlayerState {
+  const rooms = roomsByNpub.get(state.npub);
+  if (!rooms) {
+    if (!state.rooms) {
+      return state;
+    }
+    return stripRooms(state);
+  }
+  if (state.rooms && roomsEqual(state.rooms, rooms)) {
+    return state;
+  }
+  return { ...state, rooms };
 }
 
 function stripSpeaking(state: PlayerState): PlayerState {
@@ -279,6 +347,96 @@ function clearSpeakingLevel(npub: string) {
   notifyPlayers();
 }
 
+function normalizeRooms(rooms: readonly string[]): string[] {
+  const unique = new Set<string>();
+  for (const room of rooms) {
+    if (typeof room === "string" && room.trim().length > 0) {
+      unique.add(room.trim());
+    }
+  }
+  return Array.from(unique).sort();
+}
+
+function roomsEqual(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) {
+    return false;
+  }
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function stripRooms(state: PlayerState): PlayerState {
+  const { rooms: _omit, ...rest } = state;
+  return { ...rest };
+}
+
+function setRooms(npub: string, rooms: readonly string[]): void {
+  const normalized = normalizeRooms(rooms);
+  const previous = roomsByNpub.get(npub);
+  if (previous && roomsEqual(previous, normalized)) {
+    return;
+  }
+
+  if (normalized.length > 0) {
+    roomsByNpub.set(npub, normalized);
+  } else {
+    roomsByNpub.delete(npub);
+  }
+
+  const bucket = sourcesByNpub.get(npub);
+  if (bucket) {
+    for (const sourceKey of bucket) {
+      const existing = stateBySource.get(sourceKey);
+      if (!existing) continue;
+      const updated = normalized.length > 0 ? { ...existing, rooms: normalized } : stripRooms(existing);
+      stateBySource.set(sourceKey, updated);
+      if (sourceKey === LOCAL_SOURCE_KEY) {
+        localState = updated;
+      }
+    }
+  }
+
+  const current = players.get(npub);
+  if (current) {
+    players.set(npub, normalized.length > 0 ? { ...current, rooms: normalized } : stripRooms(current));
+  }
+
+  notifyPlayers();
+  updateAudioMix();
+}
+
+function clearRooms(npub: string): void {
+  if (!roomsByNpub.has(npub)) {
+    return;
+  }
+  roomsByNpub.delete(npub);
+
+  const bucket = sourcesByNpub.get(npub);
+  if (bucket) {
+    for (const sourceKey of bucket) {
+      const existing = stateBySource.get(sourceKey);
+      if (!existing) continue;
+      const updated = stripRooms(existing);
+      stateBySource.set(sourceKey, updated);
+      if (sourceKey === LOCAL_SOURCE_KEY) {
+        localState = updated;
+      }
+    }
+  }
+
+  const current = players.get(npub);
+  if (current) {
+    players.set(npub, stripRooms(current));
+  }
+
+  notifyPlayers();
+  updateAudioMix();
+}
+
 function addSourceState(sourceKey: string, state: PlayerState) {
   const previous = stateBySource.get(sourceKey);
   if (previous && previous.npub !== state.npub) {
@@ -302,7 +460,7 @@ function addSourceState(sourceKey: string, state: PlayerState) {
     }
   }
 
-  const enriched = withSpeakingLevel(state);
+  const enriched = withSpeakingLevel(withRooms(state));
   stateBySource.set(sourceKey, enriched);
   let bucket = sourcesByNpub.get(state.npub);
   if (!bucket) {
@@ -426,7 +584,8 @@ function serializeState(state: PlayerState) {
     x: state.x,
     y: state.y,
     facing: state.facing,
-    room: state.room,
+    room: state.rooms?.[0],
+    rooms: state.rooms,
     ts: Date.now(),
   };
 }
@@ -460,12 +619,14 @@ function teardownLocalSession() {
     stateSubscribers.clear();
     audioSubscribers.clear();
     speakingSubscribers.clear();
+    roomsSubscribers.clear();
     return;
   }
 
   stateSubscribers.clear();
   audioSubscribers.clear();
   speakingSubscribers.clear();
+  roomsSubscribers.clear();
   try {
     localSession.broadcast.close();
   } catch (error) {
@@ -525,6 +686,15 @@ function runPublishLoop(broadcast: Moq.Broadcast) {
             stateSubscribers.delete(track);
           });
         maybeBroadcastLocal(true);
+      } else if (request.track.name === ROOMS_TRACK) {
+        const track = request.track;
+        roomsSubscribers.add(track);
+        track.closed
+          .catch(() => undefined)
+          .finally(() => {
+            roomsSubscribers.delete(track);
+          });
+        sendRooms(track);
       } else if (request.track.name === AUDIO_TRACK) {
         const track = request.track;
         audioSubscribers.add(track);
@@ -575,12 +745,16 @@ function handleDisconnected() {
     try {
       sub.speakingTrack?.close();
     } catch {}
+    try {
+      sub.roomsTrack?.close();
+    } catch {}
     audioPlayback.close(sub.path);
   }
   remoteSubscriptions.clear();
   stateSubscribers.clear();
   audioSubscribers.clear();
   speakingSubscribers.clear();
+  roomsSubscribers.clear();
   clearRemoteSources();
   teardownLocalSession();
   audioPlayback.shutdown();
@@ -658,8 +832,14 @@ function subscribeToRemote(path: Moq.Path.Valid) {
         try {
           subscription.speakingTrack?.close();
         } catch {}
+        try {
+          subscription.roomsTrack?.close();
+        } catch {}
         audioPlayback.close(path);
         removeSource(subscription.sourceKey);
+        if (subscription.npub) {
+          setRooms(subscription.npub, []);
+        }
       }
     });
 
@@ -676,6 +856,12 @@ function subscribeToRemote(path: Moq.Path.Valid) {
       subscription.lastSeen = now();
       subscription.npub = state.npub;
       addSourceState(subscription.sourceKey, state);
+      if (subscription.pendingRooms) {
+        setRooms(state.npub, subscription.pendingRooms);
+        subscription.pendingRooms = undefined;
+      } else if (state.rooms && state.rooms.length > 0) {
+        setRooms(state.npub, state.rooms);
+      }
     }
   })().catch(error => {
     console.warn(`remote subscription failed for ${path}`, error);
@@ -711,6 +897,44 @@ function subscribeToRemote(path: Moq.Path.Valid) {
     });
   } catch (error) {
     console.warn(`failed to subscribe to ${AUDIO_TRACK} for ${path}`, error);
+  }
+
+  try {
+    const roomsTrack = broadcast.subscribe(ROOMS_TRACK, 0);
+    subscription.roomsTrack = roomsTrack;
+    roomsTrack.closed
+      .catch(() => undefined)
+      .finally(() => {
+        if (subscription.roomsTrack === roomsTrack) {
+          subscription.roomsTrack = undefined;
+        }
+        if (subscription.npub) {
+          setRooms(subscription.npub, []);
+        }
+        subscription.pendingRooms = undefined;
+      });
+
+    (async () => {
+      for (;;) {
+        const payload = await roomsTrack.readJson();
+        if (!payload) {
+          break;
+        }
+        const rooms = parseRoomsPayload(payload);
+        if (!rooms) {
+          continue;
+        }
+        if (subscription.npub) {
+          setRooms(subscription.npub, rooms);
+        } else {
+          subscription.pendingRooms = rooms;
+        }
+      }
+    })().catch(error => {
+      console.warn(`rooms subscription failed for ${path}`, error);
+    });
+  } catch (error) {
+    console.warn(`failed to subscribe to ${ROOMS_TRACK} for ${path}`, error);
   }
 
   try {
@@ -761,8 +985,15 @@ function unsubscribeFromRemote(path: Moq.Path.Valid) {
   try {
     subscription.speakingTrack?.close();
   } catch {}
+  try {
+    subscription.roomsTrack?.close();
+  } catch {}
   audioPlayback.close(path);
   removeSource(subscription.sourceKey);
+  if (subscription.npub) {
+    setRooms(subscription.npub, []);
+  }
+  subscription.pendingRooms = undefined;
 }
 
 function parseRemoteState(payload: unknown): PlayerState | null {
@@ -789,15 +1020,38 @@ function parseRemoteState(payload: unknown): PlayerState | null {
     facing = Math.floor(facingRaw) as FacingDirection;
   }
 
+  let rooms: string[] | undefined;
+  const roomsRaw = (data as Record<string, unknown>).rooms;
+  if (Array.isArray(roomsRaw)) {
+    const normalized = normalizeRooms(roomsRaw);
+    if (normalized.length > 0) {
+      rooms = normalized;
+    }
+  }
   const room = typeof data.room === "string" ? data.room : undefined;
+  if (!rooms && room) {
+    rooms = [room];
+  }
 
   return {
     npub,
     x: xRaw,
     y: yRaw,
     facing,
-    room,
+    rooms,
   };
+}
+
+function parseRoomsPayload(payload: unknown): string[] | undefined {
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+  const roomsValue = (payload as Record<string, unknown>).rooms;
+  if (!Array.isArray(roomsValue)) {
+    return undefined;
+  }
+  const parsed = roomsValue.filter((value): value is string => typeof value === "string");
+  return normalizeRooms(parsed);
 }
 
 function parseSpeakingLevel(payload: unknown): number | undefined {
@@ -837,6 +1091,7 @@ function cleanupProfileIfOrphan(npub: string) {
   if (localState?.npub === npub) {
     return;
   }
+  clearRooms(npub);
   clearSpeakingLevel(npub);
   untrackProfile(npub);
 }
@@ -983,10 +1238,33 @@ export function stopStream() {
 
 export function updateLocalPlayer(state: PlayerState) {
   const normalized = normalizeIdentifier(state.npub) ?? state.npub;
-  localState = { ...state, npub: normalized };
+  const rooms = localRooms;
+  localState = { ...state, npub: normalized, rooms };
   addSourceState(LOCAL_SOURCE_KEY, localState);
   void ensureLocalSession(normalized);
+  if (normalized) {
+    setRooms(normalized, rooms);
+  }
   maybeBroadcastLocal();
+}
+
+export function updateLocalRooms(rooms: string[]): void {
+  const normalized = normalizeRooms(rooms);
+  if (roomsEqual(localRooms, normalized)) {
+    return;
+  }
+  localRooms = normalized;
+  if (localState) {
+    localState = { ...localState, rooms: normalized };
+    stateBySource.set(LOCAL_SOURCE_KEY, localState);
+  }
+  const npub = localState?.npub;
+  if (npub) {
+    setRooms(npub, normalized);
+  } else {
+    updateAudioMix();
+  }
+  broadcastRoomsUpdate();
 }
 
 export function removePlayer(npub: string) {
@@ -1000,11 +1278,13 @@ export function removePlayer(npub: string) {
     lastSentState = null;
     lastSentAt = 0;
     pendingLocalIdentity = null;
+    localRooms = [];
     removeSource(LOCAL_SOURCE_KEY);
     void stopMicrophoneCapture();
   }
 
   untrackProfile(npub);
+  clearRooms(npub);
 }
 
 export async function setMicrophoneEnabled(enabled: boolean): Promise<void> {
@@ -1026,6 +1306,7 @@ export function setSpeakerEnabled(enabled: boolean): void {
   if (enabled) {
     void audioPlayback.resume().catch(() => undefined);
   }
+  updateAudioMix();
 }
 
 export function getAudioState(): AudioControlState {

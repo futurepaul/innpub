@@ -10,6 +10,7 @@ export class AudioPlayback {
   #masterGain?: GainNode;
   #remotes = new Map<string, RemoteState>();
   #enabled = true;
+  #volumes = new Map<string, number>();
 
   async resume(): Promise<void> {
     const context = await this.#ensureContext();
@@ -40,6 +41,10 @@ export class AudioPlayback {
     }
 
     const remote = this.#remotes.get(path) ?? this.#createRemote(path);
+    const targetGain = this.#volumes.get(path);
+    if (typeof targetGain === "number") {
+      remote.gain.gain.value = targetGain;
+    }
     const startAt = Math.max(remote.nextTime, context.currentTime + 0.05);
 
     const source = context.createBufferSource();
@@ -50,11 +55,20 @@ export class AudioPlayback {
     remote.nextTime = startAt + buffer.duration;
   }
 
+  setVolume(path: string, value: number) {
+    this.#volumes.set(path, value);
+    const remote = this.#remotes.get(path);
+    if (remote) {
+      remote.gain.gain.value = value;
+    }
+  }
+
   close(path: string) {
     const remote = this.#remotes.get(path);
     if (!remote) return;
     remote.gain.disconnect();
     this.#remotes.delete(path);
+    this.#volumes.delete(path);
   }
 
   shutdown() {

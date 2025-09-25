@@ -13,6 +13,7 @@ import {
   subscribe,
   subscribeProfiles,
   updateLocalPlayer,
+  updateLocalRooms,
   removePlayer,
   type PlayerState,
   type PlayerProfile,
@@ -35,6 +36,7 @@ export function App() {
   const remotePlayersRef = useRef<PlayerState[]>([]);
 
   const [playerPosition, setPlayerPosition] = useState({ x: 0, y: 0 });
+  const [playerRooms, setPlayerRooms] = useState<string[]>([]);
   const [logMessages, setLogMessages] = useState<string[]>([]);
   const [consoleOpen, setConsoleOpen] = useState(false);
   const [consoleInput, setConsoleInput] = useState("/");
@@ -120,12 +122,17 @@ export function App() {
       if (pubkeyRef.current) {
         removePlayer(pubkeyRef.current);
       }
+      setPlayerRooms([]);
       unsubscribeProfiles();
       unsubscribePlayers();
-       unsubscribeAudio();
+      unsubscribeAudio();
       stopStream();
     };
   }, []);
+
+  useEffect(() => {
+    updateLocalRooms(playerRooms);
+  }, [playerRooms]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -211,6 +218,9 @@ export function App() {
               }
               return next;
             });
+          },
+          onPlayerRooms: rooms => {
+            setPlayerRooms(rooms);
           },
         });
         gameInstanceRef.current = game;
@@ -365,6 +375,7 @@ export function App() {
     appendLog("Logged out");
     avatarRef.current = null;
     gameInstanceRef.current?.setAvatar(null);
+    setPlayerRooms([]);
     void setMicrophoneEnabled(false);
   }, [appendLog]);
 

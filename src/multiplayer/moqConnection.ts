@@ -5,6 +5,7 @@ export const PLAYERS_PREFIX = Moq.Path.from("innpub", "players");
 export const STATE_TRACK = "state.json";
 export const AUDIO_TRACK = "audio.pcm";
 export const SPEAKING_TRACK = "speaking.json";
+export const ROOMS_TRACK = "rooms.json";
 
 export type MoqConnection = Moq.Connection.Established;
 
