@@ -104,7 +104,8 @@ export function removePlayer(npub: string) {
 }
 
 const sampleNpub = "npub1zxu639qym0esxnn7rzrt48wycmfhdu3e5yvzwx7ja3t84zyc2r8qz8cx2y";
-const BASE_SPEED = 55;
+const BASE_SPEED = 45;
+const DIRECTION_TICKS = 30;
 
 function ensureSamplePlayer() {
   const existing = players.get(sampleNpub);
@@ -114,8 +115,8 @@ function ensureSamplePlayer() {
 
   const sample: PlayerState = {
     npub: sampleNpub,
-    x: 0,
-    y: 0,
+    x: 160,
+    y: 160,
     facing: 1,
   };
   const firstPlayer = Array.from(players.values()).find(p => p.npub !== sampleNpub);
@@ -130,6 +131,8 @@ function ensureSamplePlayer() {
 }
 
 let lastTick = performance.now();
+let directionAngle = Math.random() * Math.PI * 2;
+let directionTicksRemaining = DIRECTION_TICKS;
 
 function tick() {
   const now = performance.now();
@@ -138,17 +141,23 @@ function tick() {
 
   const sample = ensureSamplePlayer();
 
-  const wanderAngle = Math.random() * Math.PI * 2;
-  const speed = BASE_SPEED;
-  sample.x += Math.cos(wanderAngle) * speed * delta;
-  sample.y += Math.sin(wanderAngle) * speed * delta;
+  if (directionTicksRemaining <= 0) {
+    directionAngle = Math.random() * Math.PI * 2;
+    directionTicksRemaining = DIRECTION_TICKS;
+  }
 
-  const absX = Math.abs(Math.cos(wanderAngle));
-  const absY = Math.abs(Math.sin(wanderAngle));
+  directionTicksRemaining -= 1;
+
+  const speed = BASE_SPEED;
+  sample.x += Math.cos(directionAngle) * speed * delta;
+  sample.y += Math.sin(directionAngle) * speed * delta;
+
+  const absX = Math.abs(Math.cos(directionAngle));
+  const absY = Math.abs(Math.sin(directionAngle));
   if (absX >= absY) {
-    sample.facing = Math.cos(wanderAngle) >= 0 ? 1 : 0;
+    sample.facing = Math.cos(directionAngle) >= 0 ? 1 : 0;
   } else {
-    sample.facing = Math.sin(wanderAngle) >= 0 ? 2 : 3;
+    sample.facing = Math.sin(directionAngle) >= 0 ? 3 : 2;
   }
 
   players.set(sample.npub, sample);
