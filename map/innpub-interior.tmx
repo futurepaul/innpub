@@ -99,16 +99,14 @@
  </layer>
  <objectgroup id="3" name="Collision">
   <object id="3" x="417.323" y="192" width="46.677" height="32"/>
-  <object id="4" x="16" y="0" width="128" height="32"/>
   <object id="8" x="144" y="0" width="32" height="160"/>
   <object id="9" x="144" y="208" width="32" height="96"/>
-  <object id="12" x="16" y="304" width="464" height="16"/>
+  <object id="12" x="0" y="304" width="480" height="16"/>
   <object id="13" x="0" y="0" width="16" height="320"/>
-  <object id="14" x="464" y="0" width="16" height="304"/>
+  <object id="14" x="464" y="0" width="16" height="320"/>
   <object id="15" x="240" y="0" width="32" height="192"/>
   <object id="16" x="240" y="192" width="128" height="32"/>
-  <object id="18" x="176" y="0" width="64" height="32"/>
-  <object id="19" x="267.153" y="0" width="196.847" height="32"/>
+  <object id="19" x="0" y="0" width="480" height="32"/>
   <object id="20" x="63.8845" y="32" width="46.4614" height="12"/>
   <object id="33" x="96" y="112" width="48" height="4"/>
   <object id="34" x="52" y="144" width="24" height="4"/>
