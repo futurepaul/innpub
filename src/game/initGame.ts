@@ -254,6 +254,7 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     head.tint = 0xffffff;
     head.anchor.set(0.5, 0);
     head.x = playerWidth / 2;
+    head.alpha = 0;
 
     const body = new AnimatedSprite(walkTextures.length > 0 ? walkTextures : [WHITE_TEXTURE]);
     body.width = playerWidth;
