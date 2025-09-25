@@ -435,18 +435,12 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     }
 
     const bounds = headSprite.getBounds();
-    const canvas = app.renderer.canvas as HTMLCanvasElement;
-    const cssWidth = canvas.clientWidth || app.renderer.width;
-    const cssHeight = canvas.clientHeight || app.renderer.height;
-
-    const scaleX = cssWidth / app.renderer.width;
-    const scaleY = cssHeight / app.renderer.height;
 
     hooks.onHeadPosition({
-      x: bounds.x * scaleX,
-      y: bounds.y * scaleY,
-      width: bounds.width * scaleX,
-      height: bounds.height * scaleY,
+      x: bounds.x,
+      y: bounds.y,
+      width: bounds.width,
+      height: bounds.height,
     });
   };
 

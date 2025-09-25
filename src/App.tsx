@@ -409,7 +409,8 @@ export function App() {
           style={{
             width: `${headRect.width}px`,
             height: `${headRect.height}px`,
-            transform: `translate(${headRect.x}px, ${headRect.y}px)`,
+            left: `${headRect.x}px`,
+            top: `${headRect.y}px`,
           }}
         >
           <img src={avatarUrl} alt={displayName ?? "Player"} />
