@@ -210,9 +210,8 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     scene.addChild(createTileLayer(layer));
   }
 
-  const bodySpriteUrl = new URL("../walkstrich.png", import.meta.url).href;
+  const bodySpriteUrl = new URL("/assets/walkstrich.png", window.location.origin).href;
   let bodySheetTexture: Texture | undefined;
-  let idleTexture: Texture = WHITE_TEXTURE;
   const walkTextures: Texture[] = [];
 
   try {
@@ -224,13 +223,6 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     const frameHeight = map.tileHeight;
 
     for (let col = 0; col < 4; col += 1) {
-      if (col === 0) {
-        idleTexture = new Texture({
-          source: baseSource,
-          frame: new Rectangle(0, 0, frameWidth, frameHeight),
-        });
-      }
-
       const walkFrame = new Texture({
         source: baseSource,
         frame: new Rectangle(col * frameWidth, frameHeight, frameWidth, frameHeight),
@@ -273,7 +265,6 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
   if (walkTextures.length > 0) {
     bodySprite.gotoAndStop(0);
     bodySprite.stop();
-    bodySprite.texture = idleTexture;
   } else {
     bodySprite.tint = 0x6ee7b7;
   }
@@ -482,12 +473,18 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     }
 
     const bounds = headSprite.getBounds();
+    const canvas = app.renderer.canvas as HTMLCanvasElement;
+    const canvasWidth = canvas.clientWidth || canvas.width;
+    const canvasHeight = canvas.clientHeight || canvas.height;
+    const cssScaleX = canvasWidth / canvas.width;
+    const cssScaleY = canvasHeight / canvas.height;
+    const headOffset = isWalking ? lastDirection * 8 : 0;
 
     hooks.onHeadPosition({
-      x: bounds.x,
-      y: bounds.y,
-      width: bounds.width,
-      height: bounds.height,
+      x: (bounds.x + headOffset) * cssScaleX,
+      y: bounds.y * cssScaleY,
+      width: bounds.width * cssScaleX,
+      height: bounds.height * cssScaleY,
     });
   };
 
@@ -520,7 +517,7 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
       if (!isWalking || !bodySprite.playing) {
         bodySprite.textures = walkTextures;
         bodySprite.animationSpeed = 0.18;
-        bodySprite.gotoAndPlay(0);
+        bodySprite.play();
       }
       isWalking = true;
     } else {
@@ -528,7 +525,6 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
         bodySprite.stop();
       }
       isWalking = false;
-      bodySprite.texture = idleTexture;
     }
 
     updateSceneTransform();
@@ -602,9 +598,6 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
       void Assets.unload(bodySpriteUrl);
       for (const texture of walkTextures) {
         texture.destroy();
-      }
-      if (idleTexture !== WHITE_TEXTURE) {
-        idleTexture.destroy();
       }
     }
     if (avatarAssetUrl) {

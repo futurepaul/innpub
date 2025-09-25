@@ -342,26 +342,7 @@ export function App() {
     gameInstanceRef.current.setAvatar(avatarUrl);
   }, [avatarUrl]);
 
-  const headDisplayRect = useMemo(() => {
-    if (!headRect) {
-      return null;
-    }
-
-    const canvas = containerRef.current?.querySelector<HTMLCanvasElement>("canvas");
-    if (!canvas || canvas.width === 0 || canvas.height === 0) {
-      return headRect;
-    }
-
-    const scaleX = canvas.clientWidth / canvas.width;
-    const scaleY = canvas.clientHeight / canvas.height;
-
-    return {
-      x: headRect.x * scaleX,
-      y: headRect.y * scaleY,
-      width: headRect.width * scaleX,
-      height: headRect.height * scaleY,
-    };
-  }, [headRect]);
+  const headDisplayRect = headRect;
 
   const lines = consoleOpen ? logMessages : logMessages.slice(-1);
   const visibleLogs = lines.length > 0 ? lines : [consoleOpen ? "Console ready" : "Press / to open console"];

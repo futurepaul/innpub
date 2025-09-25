@@ -299,7 +299,7 @@ body {
   justify-content: center;
   overflow: hidden;
   border-radius: 4px;
-  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.45);
+  border: 1px solid black;
   z-index: 10;
   background: rgba(0, 0, 0, 0.1);
 }
