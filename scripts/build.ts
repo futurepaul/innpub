@@ -24,6 +24,7 @@ async function run() {
   await mkdir("dist", { recursive: true });
   await cp("map", "dist/map", { recursive: true });
   await cp("assets", "dist/assets", { recursive: true });
+  await cp("src/DotGothic16-Regular.ttf", "dist/DotGothic16-Regular.ttf");
 }
 
 run().catch(error => {
