@@ -1,5 +1,6 @@
 import { eventStore, DEFAULT_RELAYS } from "../nostr/client";
 import { getProfilePicture, type ProfileContent } from "applesauce-core/helpers";
+import { decode as decodeNip19 } from "nostr-tools/nip19";
 
 export type FacingDirection = 0 | 1 | 2 | 3;
 
@@ -55,7 +56,22 @@ function trackProfile(npub: string) {
     return;
   }
 
-  const subscription = eventStore.profile({ pubkey: npub, relays: DEFAULT_RELAYS }).subscribe(profile => {
+  const hexPubkey = (() => {
+    if (/^[0-9a-f]{64}$/i.test(npub)) {
+      return npub.toLowerCase();
+    }
+    try {
+      const decoded = decodeNip19(npub);
+      if (decoded.type === "npub" && typeof decoded.data === "string") {
+        return decoded.data.toLowerCase();
+      }
+    } catch (error) {
+      console.warn("Failed to decode npub", npub, error);
+    }
+    return npub;
+  })();
+
+  const subscription = eventStore.profile({ pubkey: hexPubkey, relays: DEFAULT_RELAYS }).subscribe(profile => {
     profiles.set(npub, { npub, profile });
     notifyProfiles();
   });
