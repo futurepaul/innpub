@@ -434,22 +434,20 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
       return;
     }
 
+    const bounds = headSprite.getBounds();
     const canvas = app.renderer.canvas as HTMLCanvasElement;
-    const cssScaleX = canvas.clientWidth / app.renderer.width;
-    const cssScaleY = canvas.clientHeight / app.renderer.height;
+    const cssWidth = canvas.clientWidth || app.renderer.width;
+    const cssHeight = canvas.clientHeight || app.renderer.height;
 
-    const scaleX = scene.scale.x * cssScaleX;
-    const scaleY = scene.scale.y * cssScaleY;
+    const scaleX = cssWidth / app.renderer.width;
+    const scaleY = cssHeight / app.renderer.height;
 
-    const sceneOffsetX = scene.position.x * cssScaleX;
-    const sceneOffsetY = scene.position.y * cssScaleY;
-
-    const x = sceneOffsetX + player.x * scaleX;
-    const y = sceneOffsetY + player.y * scaleY;
-    const width = playerWidth * scaleX;
-    const height = map.tileHeight * scaleY;
-
-    hooks.onHeadPosition({ x, y, width, height });
+    hooks.onHeadPosition({
+      x: bounds.x * scaleX,
+      y: bounds.y * scaleY,
+      width: bounds.width * scaleX,
+      height: bounds.height * scaleY,
+    });
   };
 
   const tickerFn = (ticker: Ticker) => {
