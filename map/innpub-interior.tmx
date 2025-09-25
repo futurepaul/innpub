@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<map version="1.10" tiledversion="1.11.2" orientation="orthogonal" renderorder="left-down" width="30" height="20" tilewidth="16" tileheight="16" infinite="0" nextlayerid="6" nextobjectid="29">
+<map version="1.10" tiledversion="1.11.2" orientation="orthogonal" renderorder="left-down" width="30" height="20" tilewidth="16" tileheight="16" infinite="0" nextlayerid="6" nextobjectid="46">
  <tileset firstgid="1" source="inside.tsx"/>
  <layer id="1" name="Background" width="30" height="20">
   <data encoding="csv">
@@ -85,14 +85,27 @@
   <object id="16" x="240" y="192" width="128" height="32"/>
   <object id="18" x="176" y="0" width="64" height="32"/>
   <object id="19" x="267.153" y="0" width="196.847" height="32"/>
-  <object id="20" x="63.8845" y="0" width="46.4614" height="48"/>
+  <object id="20" x="63.8845" y="32" width="46.4614" height="12"/>
+  <object id="33" x="96" y="112" width="48" height="8"/>
+  <object id="34" x="52" y="144" width="24" height="8"/>
+  <object id="35" x="32" y="184" width="16" height="8"/>
+  <object id="36" x="16" y="56" width="16" height="8"/>
+  <object id="37" x="16" y="224" width="48" height="8"/>
+  <object id="38" x="312" y="116" width="32" height="24"/>
+  <object id="39" x="368" y="88" width="48" height="32"/>
+  <object id="40" x="304" y="32" width="16" height="12"/>
+  <object id="41" x="360" y="32" width="32" height="12"/>
+  <object id="42" x="408" y="32" width="32" height="12"/>
+  <object id="43" x="448" y="68" width="16" height="8"/>
+  <object id="44" x="448" y="100" width="16" height="8"/>
+  <object id="45" x="448" y="132" width="16" height="8"/>
  </objectgroup>
  <objectgroup id="5" name="Rooms">
   <object id="27" name="room_2" x="272" y="32">
-   <polygon points="0,0 0,160 192,160 192,0"/>
+   <polygon points="0,0 0,160 96,160 96,176 144,176 144,160 192,160 192,0"/>
   </object>
   <object id="28" name="room_1" x="16" y="32">
-   <polygon points="0,0 0,272 128,272 128,176 144,176 144,144 144,128 128,128 128,0 96,0 96,16 48,16 48,0"/>
+   <polygon points="0,0 0,272 128,272 128,176 144,176 144,128 128,128 128,0 96,0 96,16 48,16 48,0"/>
   </object>
  </objectgroup>
 </map>
