@@ -48,6 +48,7 @@ export function App() {
   const [npubInputValue, setNpubInputValue] = useState("");
   const [loginError, setLoginError] = useState<string | null>(null);
   const [loginPending, setLoginPending] = useState(false);
+  const [headRect, setHeadRect] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
 
   const appendLog = useCallback((message: string) => {
     setLogMessages(prev => {
@@ -160,6 +161,7 @@ export function App() {
         const game = await initGame(app, {
           onPlayerPosition: position => setPlayerPosition(position),
           onConsoleMessage: appendLog,
+          onHeadPosition: rect => setHeadRect(rect),
         });
         gameInstanceRef.current = game;
         game.setAvatar(avatarRef.current);
@@ -400,6 +402,20 @@ export function App() {
           )}
         </div>
       </div>
+
+      {pubkey && avatarUrl && headRect && (
+        <div
+          className="avatar-head"
+          style={{
+            width: `${headRect.width}px`,
+            height: `${headRect.height}px`,
+            transform: `translate(${headRect.x}px, ${headRect.y}px)`,
+          }}
+        >
+          <img src={avatarUrl} alt={displayName ?? "Player"} />
+          <div className="avatar-label">{displayName ?? (npub ? `${npub.slice(0, 12)}…` : "Anon")}</div>
+        </div>
+      )}
 
       {!pubkey && (
         <div className="login-overlay">

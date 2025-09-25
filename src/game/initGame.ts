@@ -14,6 +14,7 @@ import { XMLParser } from "fast-xml-parser";
 export type GameHooks = {
   onPlayerPosition?: (position: { x: number; y: number }) => void;
   onConsoleMessage?: (message: string) => void;
+  onHeadPosition?: (rect: { x: number; y: number; width: number; height: number } | null) => void;
 };
 
 export type GameInstance = {
@@ -428,6 +429,22 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     scene.position.set(offsetX, offsetY);
   };
 
+  const emitHeadPosition = () => {
+    if (!hooks.onHeadPosition || !app.renderer) {
+      return;
+    }
+
+    const scaleX = scene.scale.x;
+    const scaleY = scene.scale.y;
+
+    const x = scene.position.x + player.x * scaleX;
+    const y = scene.position.y + player.y * scaleY;
+    const width = playerWidth * scaleX;
+    const height = map.tileHeight * scaleY;
+
+    hooks.onHeadPosition({ x, y, width, height });
+  };
+
   const tickerFn = (ticker: Ticker) => {
     const horizontal = Number(pressed.has("right")) - Number(pressed.has("left"));
     const vertical = Number(pressed.has("down")) - Number(pressed.has("up"));
@@ -448,9 +465,11 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     updateSceneTransform();
     updateRooms();
     reportPosition();
+    emitHeadPosition();
   };
 
   updateSceneTransform();
+  emitHeadPosition();
   app.ticker.add(tickerFn);
 
   let avatarAssetUrl: string | undefined;
@@ -515,6 +534,7 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
       avatarAssetUrl = undefined;
     }
     pressed.clear();
+    hooks.onHeadPosition?.(null);
   };
 
   const setInputCaptured = (captured: boolean) => {
@@ -535,6 +555,7 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     updateFootBounds();
     updateRooms();
     reportPosition();
+    emitHeadPosition();
   };
 
   return {
