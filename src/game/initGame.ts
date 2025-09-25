@@ -434,11 +434,18 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
       return;
     }
 
-    const scaleX = scene.scale.x;
-    const scaleY = scene.scale.y;
+    const canvas = app.renderer.canvas as HTMLCanvasElement;
+    const cssScaleX = canvas.clientWidth / app.renderer.width;
+    const cssScaleY = canvas.clientHeight / app.renderer.height;
 
-    const x = scene.position.x + player.x * scaleX;
-    const y = scene.position.y + player.y * scaleY;
+    const scaleX = scene.scale.x * cssScaleX;
+    const scaleY = scene.scale.y * cssScaleY;
+
+    const sceneOffsetX = scene.position.x * cssScaleX;
+    const sceneOffsetY = scene.position.y * cssScaleY;
+
+    const x = sceneOffsetX + player.x * scaleX;
+    const y = sceneOffsetY + player.y * scaleY;
     const width = playerWidth * scaleX;
     const height = map.tileHeight * scaleY;
 
