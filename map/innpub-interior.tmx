@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<map version="1.10" tiledversion="1.11.2" orientation="orthogonal" renderorder="left-down" width="30" height="20" tilewidth="16" tileheight="16" infinite="0" nextlayerid="5" nextobjectid="20">
+<map version="1.10" tiledversion="1.11.2" orientation="orthogonal" renderorder="left-down" width="30" height="20" tilewidth="16" tileheight="16" infinite="0" nextlayerid="5" nextobjectid="26">
  <tileset firstgid="1" source="inside.tsx"/>
- <layer id="1" name="Background" width="30" height="20" visible="0">
+ <layer id="1" name="Background" width="30" height="20">
   <data encoding="csv">
 1162,1166,1166,1166,1166,1166,1166,1166,1166,1158,1162,1166,1166,1166,1166,1158,1162,1166,1166,1166,1166,1166,1166,1166,1166,1166,1166,1166,1166,1158,
 1164,651,652,652,652,652,652,652,653,1159,1164,651,652,652,653,1159,1164,651,652,652,652,652,652,652,652,652,652,652,653,1159,
@@ -25,7 +25,7 @@
 1163,1163,1163,1163,1163,1163,1163,1163,1163,1163,1163,1163,1163,1163,1163,1163,1163,1163,1163,1163,1163,1163,1163,1163,1163,1163,1163,1163,1163,1163
 </data>
  </layer>
- <layer id="2" name="Background 2" width="30" height="20" visible="0">
+ <layer id="2" name="Background 2" width="30" height="20">
   <data encoding="csv">
 0,0,0,0,1030,1031,1032,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
 0,0,0,0,1078,1079,1080,0,0,0,0,0,1142,1143,0,0,0,0,0,1225,0,0,1231,1232,1233,1231,1232,1233,0,0,
@@ -74,16 +74,17 @@
 </data>
  </layer>
  <objectgroup id="3" name="Collision">
-  <object id="3" x="417.323" y="190.824" width="53.9285" height="46.4615"/>
-  <object id="4" x="4.97801" y="-14.1044" width="142.703" height="61.3955"/>
-  <object id="8" x="146.022" y="-1.65934" width="27.379" height="175.06"/>
-  <object id="9" x="146.437" y="207.002" width="27.379" height="109.517"/>
-  <object id="12" x="10.7859" y="302.659" width="459.636" height="19.9119"/>
-  <object id="13" x="-13.6896" y="-17.4232" width="27.3791" height="346.802"/>
-  <object id="14" x="470.007" y="-19.9122" width="27.3791" height="347.632"/>
-  <object id="15" x="241.849" y="-10.7857" width="27.3791" height="248.901"/>
-  <object id="16" x="270.057" y="190.824" width="97.9006" height="48.1208"/>
-  <object id="18" x="170.497" y="-19.4971" width="73.0108" height="30.6976"/>
-  <object id="19" x="267.153" y="-20.3268" width="206.588" height="30.6976"/>
+  <object id="3" x="417.323" y="192" width="46.677" height="32"/>
+  <object id="4" x="16" y="0" width="128" height="32"/>
+  <object id="8" x="144" y="0" width="32" height="160"/>
+  <object id="9" x="144" y="208" width="32" height="96"/>
+  <object id="12" x="16" y="304" width="464" height="16"/>
+  <object id="13" x="0" y="0" width="16" height="320"/>
+  <object id="14" x="464" y="0" width="16" height="304"/>
+  <object id="15" x="240" y="0" width="32" height="192"/>
+  <object id="16" x="240" y="192" width="128" height="32"/>
+  <object id="18" x="176" y="0" width="64" height="32"/>
+  <object id="19" x="267.153" y="0" width="196.847" height="32"/>
+  <object id="20" x="63.8845" y="0" width="46.4614" height="48"/>
  </objectgroup>
 </map>

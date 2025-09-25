@@ -143,11 +143,12 @@ export async function initGame(app: Application): Promise<() => void> {
     return (r << 16) | (g << 8) | b;
   };
 
-  for (const layer of map.layers) {
+  const isForegroundLayer = (name: string) => name.trim().toLowerCase().startsWith("foreground");
+
+  const createTileLayer = (layer: TileLayer) => {
     const layerContainer = new Container();
     layerContainer.eventMode = "none";
     layerContainer.label = layer.name;
-    scene.addChild(layerContainer);
 
     layer.tiles.forEach((gid, index) => {
       if (!gid) {
@@ -159,7 +160,7 @@ export async function initGame(app: Application): Promise<() => void> {
 
       const sprite = new Sprite(getTileTexture(gid));
       sprite.eventMode = "none";
-       sprite.roundPixels = true;
+      sprite.roundPixels = true;
       sprite.x = column * map.tileWidth;
       sprite.y = row * map.tileHeight;
 
@@ -171,6 +172,15 @@ export async function initGame(app: Application): Promise<() => void> {
 
       layerContainer.addChild(sprite);
     });
+
+    return layerContainer;
+  };
+
+  const backgroundLayers = map.layers.filter(layer => !isForegroundLayer(layer.name));
+  const foregroundLayers = map.layers.filter(layer => isForegroundLayer(layer.name));
+
+  for (const layer of backgroundLayers) {
+    scene.addChild(createTileLayer(layer));
   }
 
   const collisionRects = map.collisions
@@ -185,11 +195,22 @@ export async function initGame(app: Application): Promise<() => void> {
   player.roundPixels = true;
   player.x = mapPixelWidth / 2 - player.width / 2;
   player.y = mapPixelHeight / 2 - player.height;
+  player.x = Math.round(player.x);
+  player.y = Math.round(player.y);
   scene.addChild(player);
+
+  for (const layer of foregroundLayers) {
+    scene.addChild(createTileLayer(layer));
+  }
 
   const footBounds = new Rectangle();
   const footHeight = map.tileHeight;
   const headHeight = player.height - footHeight;
+
+  const snapPlayerPosition = () => {
+    player.x = Math.round(player.x);
+    player.y = Math.round(player.y);
+  };
 
   type Direction = "up" | "down" | "left" | "right";
   const pressed = new Set<Direction>();
@@ -246,6 +267,7 @@ export async function initGame(app: Application): Promise<() => void> {
 
     player.x = Math.min(Math.max(player.x, 0), Math.max(0, maxX));
     player.y = Math.min(Math.max(player.y, minY), Math.max(minY, maxY));
+    snapPlayerPosition();
   };
 
   const updateFootBounds = () => {
