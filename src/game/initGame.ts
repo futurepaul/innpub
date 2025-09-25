@@ -8,6 +8,7 @@ import {
   Texture,
   SCALE_MODES,
   type Ticker,
+  AnimatedSprite,
 } from "pixi.js";
 import { XMLParser } from "fast-xml-parser";
 
@@ -209,6 +210,37 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     scene.addChild(createTileLayer(layer));
   }
 
+  const bodySpriteUrl = new URL("../walkstrich.png", import.meta.url).href;
+  let bodySheetTexture: Texture | undefined;
+  let idleTexture: Texture = WHITE_TEXTURE;
+  const walkTextures: Texture[] = [];
+
+  try {
+    bodySheetTexture = await Assets.load<Texture>(bodySpriteUrl);
+    bodySheetTexture.source.style.scaleMode = SCALE_MODES.NEAREST;
+
+    const baseSource = bodySheetTexture.source;
+    const frameWidth = map.tileWidth;
+    const frameHeight = map.tileHeight;
+
+    for (let col = 0; col < 4; col += 1) {
+      if (col === 0) {
+        idleTexture = new Texture({
+          source: baseSource,
+          frame: new Rectangle(0, 0, frameWidth, frameHeight),
+        });
+      }
+
+      const walkFrame = new Texture({
+        source: baseSource,
+        frame: new Rectangle(col * frameWidth, frameHeight, frameWidth, frameHeight),
+      });
+      walkTextures.push(walkFrame);
+    }
+  } catch (error) {
+    console.warn("Failed to load walk sprite sheet", error);
+  }
+
   const collisionRects = map.collisions
     .filter(collision => collision.width > 0 && collision.height > 0)
     .map(collision => new Rectangle(collision.x, collision.y, collision.width, collision.height));
@@ -225,13 +257,26 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
   headSprite.height = map.tileHeight;
   headSprite.roundPixels = true;
   headSprite.tint = 0xffffff;
+  headSprite.anchor.set(0.5, 0);
+  headSprite.x = playerWidth / 2;
 
-  const bodySprite = new Sprite(WHITE_TEXTURE);
+  const bodySprite = new AnimatedSprite(walkTextures.length > 0 ? walkTextures : [WHITE_TEXTURE]);
   bodySprite.width = playerWidth;
   bodySprite.height = map.tileHeight;
   bodySprite.y = map.tileHeight;
   bodySprite.roundPixels = true;
-  bodySprite.tint = 0x6ee7b7;
+  bodySprite.animationSpeed = 0.18;
+  bodySprite.loop = true;
+  bodySprite.anchor.set(0.5, 0);
+  bodySprite.x = playerWidth / 2;
+  bodySprite.scale.x = 1;
+  if (walkTextures.length > 0) {
+    bodySprite.gotoAndStop(0);
+    bodySprite.stop();
+    bodySprite.texture = idleTexture;
+  } else {
+    bodySprite.tint = 0x6ee7b7;
+  }
 
   player.addChild(headSprite, bodySprite);
 
@@ -265,6 +310,8 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
   type Direction = "up" | "down" | "left" | "right";
   const pressed = new Set<Direction>();
   let inputCaptured = false;
+  let isWalking = false;
+  let lastDirection = 1;
 
   const normaliseKey = (key: string): Direction | null => {
     switch (key) {
@@ -461,6 +508,29 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     moveAxis(dx * speed * deltaSeconds, "x");
     moveAxis(dy * speed * deltaSeconds, "y");
 
+    const moving = dx !== 0 || dy !== 0;
+
+    if (Math.abs(dx) > 0.001) {
+      lastDirection = dx > 0 ? 1 : -1;
+    }
+
+    bodySprite.scale.x = lastDirection;
+
+    if (moving && walkTextures.length > 0) {
+      if (!isWalking || !bodySprite.playing) {
+        bodySprite.textures = walkTextures;
+        bodySprite.animationSpeed = 0.18;
+        bodySprite.gotoAndPlay(0);
+      }
+      isWalking = true;
+    } else {
+      if (bodySprite.playing) {
+        bodySprite.stop();
+      }
+      isWalking = false;
+      bodySprite.texture = idleTexture;
+    }
+
     updateSceneTransform();
     updateRooms();
     reportPosition();
@@ -527,6 +597,15 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
 
     if (tilesheetTexture) {
       void Assets.unload(map.tileset.imageUrl);
+    }
+    if (bodySheetTexture) {
+      void Assets.unload(bodySpriteUrl);
+      for (const texture of walkTextures) {
+        texture.destroy();
+      }
+      if (idleTexture !== WHITE_TEXTURE) {
+        idleTexture.destroy();
+      }
     }
     if (avatarAssetUrl) {
       void Assets.unload(avatarAssetUrl);

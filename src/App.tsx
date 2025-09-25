@@ -342,6 +342,27 @@ export function App() {
     gameInstanceRef.current.setAvatar(avatarUrl);
   }, [avatarUrl]);
 
+  const headDisplayRect = useMemo(() => {
+    if (!headRect) {
+      return null;
+    }
+
+    const canvas = containerRef.current?.querySelector<HTMLCanvasElement>("canvas");
+    if (!canvas || canvas.width === 0 || canvas.height === 0) {
+      return headRect;
+    }
+
+    const scaleX = canvas.clientWidth / canvas.width;
+    const scaleY = canvas.clientHeight / canvas.height;
+
+    return {
+      x: headRect.x * scaleX,
+      y: headRect.y * scaleY,
+      width: headRect.width * scaleX,
+      height: headRect.height * scaleY,
+    };
+  }, [headRect]);
+
   const lines = consoleOpen ? logMessages : logMessages.slice(-1);
   const visibleLogs = lines.length > 0 ? lines : [consoleOpen ? "Console ready" : "Press / to open console"];
 
@@ -403,14 +424,13 @@ export function App() {
         </div>
       </div>
 
-      {pubkey && avatarUrl && headRect && (
+      {pubkey && avatarUrl && headDisplayRect && (
         <div
           className="avatar-head"
           style={{
-            width: `${headRect.width}px`,
-            height: `${headRect.height}px`,
-            left: `${headRect.x}px`,
-            top: `${headRect.y}px`,
+            width: `${headDisplayRect.width}px`,
+            height: `${headDisplayRect.height}px`,
+            transform: `translate3d(${headDisplayRect.x}px, ${headDisplayRect.y}px, 0)`,
           }}
         >
           <img src={avatarUrl} alt={displayName ?? "Player"} />

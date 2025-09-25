@@ -168,6 +168,19 @@ body {
   display: none;
 }
 
+.head-tooltip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  padding: 2px 4px;
+  background-color: rgba(0, 0, 0, 0.8);
+  color: white;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  pointer-events: none;
+  transform: translate(-50%, -100%);
+  margin-bottom: 8px;
+}
 .login-panel {
   background: rgba(6, 12, 24, 0.65);
   border: 1px solid rgba(92, 132, 255, 0.35);
@@ -278,6 +291,8 @@ body {
 
 .avatar-head {
   position: absolute;
+  top: 0;
+  left: 0;
   pointer-events: auto;
   display: flex;
   align-items: center;
