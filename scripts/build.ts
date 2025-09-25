@@ -25,6 +25,7 @@ async function run() {
   await cp("map", "dist/map", { recursive: true });
   await cp("assets", "dist/assets", { recursive: true });
   await cp("src/DotGothic16-Regular.ttf", "dist/DotGothic16-Regular.ttf");
+  await cp("src/multiplayer/audio/worklets", "dist/worklets", { recursive: true });
 }
 
 run().catch(error => {
