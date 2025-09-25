@@ -24,6 +24,7 @@ import {
   setSpeakerEnabled,
   getAudioState,
   type AudioControlState,
+  setSyntheticTone as setSyntheticToneSource,
   subscribeChats,
   sendChatMessage,
   type ChatMessage,
@@ -54,6 +55,9 @@ export function App() {
   const [playerFacing, setPlayerFacing] = useState<FacingDirection>(1);
   const [audioState, setAudioState] = useState<AudioControlState>(() => getAudioState());
   const [chatMap, setChatMap] = useState<Map<string, ChatMessage>>(new Map());
+  const [toneEnabled, setToneEnabled] = useState(false);
+  const [toneFrequency, setToneFrequency] = useState(440);
+  const [toneAmplitude, setToneAmplitude] = useState(0.05);
 
   const consoleOpen = inputMode !== null;
   const profileMapRef = useRef<Map<string, PlayerProfile>>(new Map());
@@ -449,6 +453,8 @@ export function App() {
     gameInstanceRef.current?.setAvatar(null);
     setPlayerRooms([]);
     void setMicrophoneEnabled(false);
+    setToneEnabled(false);
+    setSyntheticToneSource({ enabled: false });
   }, [appendLog]);
 
   const handleConsoleInputKeyDown = useCallback((event: ReactKeyboardEvent<HTMLInputElement>) => {
@@ -502,6 +508,14 @@ export function App() {
     }
     gameInstanceRef.current.setAvatar(avatarUrl);
   }, [avatarUrl]);
+
+  useEffect(() => {
+    setSyntheticToneSource({
+      enabled: toneEnabled,
+      frequency: toneFrequency,
+      amplitude: toneAmplitude,
+    });
+  }, [toneEnabled, toneFrequency, toneAmplitude]);
 
   useEffect(() => {
     const game = gameInstanceRef.current;
@@ -593,6 +607,59 @@ export function App() {
                 >
                   {audioState.speakerEnabled ? "Speaker On" : "Speaker Off"}
                 </button>
+                <button
+                  type="button"
+                  className={`audio-btn tone-btn${toneEnabled ? " is-on" : ""}`}
+                  onClick={() => {
+                    setToneEnabled(prev => {
+                      const next = !prev;
+                      setSyntheticToneSource({
+                        enabled: next,
+                        frequency: toneFrequency,
+                        amplitude: toneAmplitude,
+                      });
+                      appendLog(next ? "Synthetic tone enabled" : "Synthetic tone disabled");
+                      return next;
+                    });
+                  }}
+                >
+                  {toneEnabled ? "Tone On" : "Test Tone"}
+                </button>
+              </div>
+              <div className="tone-controls">
+                <label>
+                  <span>Freq</span>
+                  <input
+                    type="number"
+                    min={50}
+                    max={4000}
+                    value={toneFrequency}
+                    onChange={event => {
+                      const value = Number(event.target.value);
+                      if (Number.isFinite(value)) {
+                        const clamped = Math.min(4000, Math.max(50, value));
+                        setToneFrequency(clamped);
+                      }
+                    }}
+                  />
+                </label>
+                <label>
+                  <span>Gain</span>
+                  <input
+                    type="number"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={toneAmplitude}
+                    onChange={event => {
+                      const value = Number(event.target.value);
+                      if (Number.isFinite(value)) {
+                        const clamped = Math.min(1, Math.max(0, value));
+                        setToneAmplitude(clamped);
+                      }
+                    }}
+                  />
+                </label>
               </div>
               {audioState.micError ? <div className="audio-error">{audioState.micError}</div> : null}
             </div>

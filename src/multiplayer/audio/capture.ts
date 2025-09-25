@@ -22,6 +22,11 @@ export class AudioCapture {
   #stream?: MediaStream;
   #callbacks: CaptureCallbacks;
   #active = false;
+  #toneConfig = {
+    enabled: false,
+    frequency: 440,
+    amplitude: 0.05,
+  };
 
   constructor(callbacks: CaptureCallbacks) {
     this.#callbacks = callbacks;
@@ -54,6 +59,13 @@ export class AudioCapture {
     const worklet = new AudioWorkletNode(context, "innpub-capture-processor", {
       numberOfInputs: 1,
       numberOfOutputs: 0,
+    });
+
+    worklet.port.postMessage({
+      type: "setConfig",
+      synthetic: this.#toneConfig.enabled,
+      frequency: this.#toneConfig.frequency,
+      amplitude: this.#toneConfig.amplitude,
     });
 
     worklet.port.onmessage = event => {
@@ -105,5 +117,27 @@ export class AudioCapture {
     this.#source = undefined;
     this.#stream = undefined;
     this.#context = undefined;
+  }
+
+  setSyntheticTone(config: { enabled?: boolean; frequency?: number; amplitude?: number }) {
+    if (typeof config.enabled === "boolean") {
+      this.#toneConfig.enabled = config.enabled;
+    }
+    if (typeof config.frequency === "number" && Number.isFinite(config.frequency)) {
+      this.#toneConfig.frequency = Math.max(20, Math.min(5000, config.frequency));
+    }
+    if (typeof config.amplitude === "number" && Number.isFinite(config.amplitude)) {
+      this.#toneConfig.amplitude = Math.max(0, Math.min(1, config.amplitude));
+    }
+
+    const node = this.#node;
+    if (node) {
+      node.port.postMessage({
+        type: "setConfig",
+        synthetic: this.#toneConfig.enabled,
+        frequency: this.#toneConfig.frequency,
+        amplitude: this.#toneConfig.amplitude,
+      });
+    }
   }
 }
