@@ -2,6 +2,7 @@ import {
   type Application,
   Assets,
   Container,
+  Polygon,
   Rectangle,
   Sprite,
   Texture,
@@ -9,6 +10,16 @@ import {
   type Ticker,
 } from "pixi.js";
 import { XMLParser } from "fast-xml-parser";
+
+export type GameHooks = {
+  onPlayerPosition?: (position: { x: number; y: number }) => void;
+  onConsoleMessage?: (message: string) => void;
+};
+
+export type GameInstance = {
+  destroy: () => void;
+  setInputCaptured: (captured: boolean) => void;
+};
 
 type TileLayer = {
   name: string;
@@ -21,6 +32,11 @@ type CollisionBox = {
   y: number;
   width: number;
   height: number;
+};
+
+type RoomDefinition = {
+  name: string;
+  points: Array<{ x: number; y: number }>;
 };
 
 type TilesetInfo = {
@@ -39,6 +55,7 @@ type TiledMap = {
   tileHeight: number;
   layers: TileLayer[];
   collisions: CollisionBox[];
+  rooms: RoomDefinition[];
   tileset: TilesetInfo;
 };
 
@@ -58,16 +75,22 @@ type RawTilesetRef = {
 };
 
 type RawObjectGroup = {
-  name: string;
-  object?: RawCollision | RawCollision[];
+  name?: string;
+  object?: RawObject | RawObject[];
 };
 
-type RawCollision = {
+type RawPolygon = {
+  points?: string;
+};
+
+type RawObject = {
   id?: number;
+  name?: string;
   x?: number;
   y?: number;
   width?: number;
   height?: number;
+  polygon?: RawPolygon;
 };
 
 const parser = new XMLParser({
@@ -79,7 +102,7 @@ const parser = new XMLParser({
 
 const WHITE_TEXTURE = Texture.WHITE;
 
-export async function initGame(app: Application): Promise<() => void> {
+export async function initGame(app: Application, hooks: GameHooks = {}): Promise<GameInstance> {
   const mapUrl = new URL("/map/innpub-interior.tmx", window.location.origin).href;
   const map = await loadTiledMap(mapUrl);
 
@@ -193,15 +216,21 @@ export async function initGame(app: Application): Promise<() => void> {
   player.width = map.tileWidth;
   player.height = map.tileHeight * 2;
   player.roundPixels = true;
-  player.x = mapPixelWidth / 2 - player.width / 2;
-  player.y = mapPixelHeight / 2 - player.height;
-  player.x = Math.round(player.x);
-  player.y = Math.round(player.y);
+  player.x = Math.round(mapPixelWidth / 2 - player.width / 2);
+  player.y = Math.round(mapPixelHeight / 2 - player.height);
   scene.addChild(player);
 
   for (const layer of foregroundLayers) {
     scene.addChild(createTileLayer(layer));
   }
+
+  const roomPolygons = map.rooms.map(room => {
+    const points = room.points.flatMap(point => [point.x, point.y]);
+    return {
+      name: room.name,
+      polygon: new Polygon(points),
+    };
+  });
 
   const footBounds = new Rectangle();
   const footHeight = map.tileHeight;
@@ -214,6 +243,8 @@ export async function initGame(app: Application): Promise<() => void> {
 
   type Direction = "up" | "down" | "left" | "right";
   const pressed = new Set<Direction>();
+  let inputCaptured = false;
+
   const normaliseKey = (key: string): Direction | null => {
     switch (key) {
       case "ArrowUp":
@@ -238,6 +269,9 @@ export async function initGame(app: Application): Promise<() => void> {
   };
 
   const handleKeyDown = (event: KeyboardEvent) => {
+    if (inputCaptured) {
+      return;
+    }
     const mapped = normaliseKey(event.key);
     if (!mapped) {
       return;
@@ -248,6 +282,10 @@ export async function initGame(app: Application): Promise<() => void> {
   };
 
   const handleKeyUp = (event: KeyboardEvent) => {
+    if (inputCaptured) {
+      return;
+    }
+
     const mapped = normaliseKey(event.key);
     if (!mapped) {
       return;
@@ -277,8 +315,45 @@ export async function initGame(app: Application): Promise<() => void> {
     footBounds.height = footHeight;
   };
 
+  const reportPosition = () => {
+    hooks.onPlayerPosition?.({ x: player.x, y: player.y });
+  };
+
+  let activeRooms = new Set<string>();
+  const updateRooms = () => {
+    if (roomPolygons.length === 0) {
+      return;
+    }
+
+    const centerX = footBounds.x + footBounds.width / 2;
+    const centerY = footBounds.y + footBounds.height / 2;
+
+    const nextRooms = new Set<string>();
+    for (const room of roomPolygons) {
+      if (room.polygon.contains(centerX, centerY)) {
+        nextRooms.add(room.name);
+      }
+    }
+
+    for (const roomName of nextRooms) {
+      if (!activeRooms.has(roomName)) {
+        hooks.onConsoleMessage?.(`Entered ${roomName}`);
+      }
+    }
+
+    for (const roomName of activeRooms) {
+      if (!nextRooms.has(roomName)) {
+        hooks.onConsoleMessage?.(`Exited ${roomName}`);
+      }
+    }
+
+    activeRooms = nextRooms;
+  };
+
   clampToMap();
   updateFootBounds();
+  updateRooms();
+  reportPosition();
 
   const moveAxis = (delta: number, axis: "x" | "y") => {
     if (delta === 0) {
@@ -301,12 +376,10 @@ export async function initGame(app: Application): Promise<() => void> {
 
       if (axis === "x") {
         player.x = delta > 0 ? rect.x - player.width : rect.x + rect.width;
+      } else if (delta > 0) {
+        player.y = rect.y - player.height;
       } else {
-        if (delta > 0) {
-          player.y = rect.y - player.height;
-        } else {
-          player.y = rect.y + rect.height - headHeight;
-        }
+        player.y = rect.y + rect.height - headHeight;
       }
 
       clampToMap();
@@ -353,12 +426,14 @@ export async function initGame(app: Application): Promise<() => void> {
     moveAxis(dy * speed * deltaSeconds, "y");
 
     updateSceneTransform();
+    updateRooms();
+    reportPosition();
   };
 
   updateSceneTransform();
   app.ticker.add(tickerFn);
 
-  return () => {
+  const destroy = () => {
     window.removeEventListener("keydown", handleKeyDown);
     window.removeEventListener("keyup", handleKeyUp);
     app.ticker.remove(tickerFn);
@@ -373,6 +448,22 @@ export async function initGame(app: Application): Promise<() => void> {
       void Assets.unload(map.tileset.imageUrl);
     }
     pressed.clear();
+  };
+
+  const setInputCaptured = (captured: boolean) => {
+    if (inputCaptured === captured) {
+      return;
+    }
+
+    inputCaptured = captured;
+    if (captured) {
+      pressed.clear();
+    }
+  };
+
+  return {
+    destroy,
+    setInputCaptured,
   };
 }
 
@@ -422,11 +513,11 @@ async function loadTiledMap(url: string): Promise<TiledMap> {
     };
   });
 
-  const objectGroup = normaliseArray<RawObjectGroup>(mapNode.objectgroup).find(
-    group => group?.name === "Collision",
-  );
+  const objectGroups = normaliseArray<RawObjectGroup>(mapNode.objectgroup);
 
-  const collisions: CollisionBox[] = normaliseArray<RawCollision>(objectGroup?.object)
+  const collisionGroup = objectGroups.find(group => (group?.name ?? "").toLowerCase() === "collision");
+
+  const collisions: CollisionBox[] = normaliseArray<RawObject>(collisionGroup?.object)
     .map(obj => ({
       id: Number(obj?.id ?? 0),
       x: Number(obj?.x ?? 0),
@@ -435,6 +526,49 @@ async function loadTiledMap(url: string): Promise<TiledMap> {
       height: Number(obj?.height ?? 0),
     }))
     .filter(obj => obj.width > 0 && obj.height > 0);
+
+  const rooms: RoomDefinition[] = [];
+  const collectRoom = (obj: RawObject | undefined) => {
+    if (!obj || !obj.polygon?.points) {
+      return;
+    }
+
+    const name = obj.name ?? "room";
+    const offsetX = Number(obj.x ?? 0);
+    const offsetY = Number(obj.y ?? 0);
+
+    const parsedPoints: Array<{ x: number; y: number }> = [];
+    const rawPoints = obj.polygon.points.trim().split(/\s+/);
+
+    for (const pair of rawPoints) {
+      const [rawX, rawY] = pair.split(",");
+      const px = Number(rawX);
+      const py = Number(rawY);
+      if (!Number.isFinite(px) || !Number.isFinite(py)) {
+        continue;
+      }
+      parsedPoints.push({ x: offsetX + px, y: offsetY + py });
+    }
+
+    if (parsedPoints.length >= 3) {
+      rooms.push({ name, points: parsedPoints });
+    }
+  };
+
+  for (const group of objectGroups) {
+    const groupName = (group?.name ?? "").toLowerCase();
+    if (groupName === "rooms") {
+      for (const obj of normaliseArray<RawObject>(group.object)) {
+        collectRoom(obj);
+      }
+    } else if (groupName === "collision") {
+      for (const obj of normaliseArray<RawObject>(group.object)) {
+        if ((obj.name ?? "").toLowerCase().startsWith("room")) {
+          collectRoom(obj);
+        }
+      }
+    }
+  }
 
   const tilesetRef = normaliseArray<RawTilesetRef>(mapNode.tileset)[0];
   if (!tilesetRef) {
@@ -478,6 +612,7 @@ async function loadTiledMap(url: string): Promise<TiledMap> {
     tileHeight,
     layers: parsedLayers,
     collisions,
+    rooms,
     tileset: {
       firstGid: Number(tilesetRef.firstgid ?? 1),
       columns: Number(tilesetNode.columns ?? 0),

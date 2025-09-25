@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<map version="1.10" tiledversion="1.11.2" orientation="orthogonal" renderorder="left-down" width="30" height="20" tilewidth="16" tileheight="16" infinite="0" nextlayerid="5" nextobjectid="26">
+<map version="1.10" tiledversion="1.11.2" orientation="orthogonal" renderorder="left-down" width="30" height="20" tilewidth="16" tileheight="16" infinite="0" nextlayerid="6" nextobjectid="29">
  <tileset firstgid="1" source="inside.tsx"/>
  <layer id="1" name="Background" width="30" height="20">
   <data encoding="csv">
@@ -86,5 +86,13 @@
   <object id="18" x="176" y="0" width="64" height="32"/>
   <object id="19" x="267.153" y="0" width="196.847" height="32"/>
   <object id="20" x="63.8845" y="0" width="46.4614" height="48"/>
+ </objectgroup>
+ <objectgroup id="5" name="Rooms">
+  <object id="27" name="room_2" x="272" y="32">
+   <polygon points="0,0 0,160 192,160 192,0"/>
+  </object>
+  <object id="28" name="room_1" x="16" y="32">
+   <polygon points="0,0 0,272 128,272 128,176 144,176 144,144 144,128 128,128 128,0 96,0 96,16 48,16 48,0"/>
+  </object>
  </objectgroup>
 </map>

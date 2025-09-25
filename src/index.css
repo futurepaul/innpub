@@ -1,3 +1,11 @@
+@font-face {
+  font-family: "DotGothic16";
+  src: url("./DotGothic16-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   color-scheme: dark;
   background-color: #050505;
@@ -46,4 +54,110 @@ body {
   image-rendering: pixelated;
   image-rendering: crisp-edges;
   background: #050505;
+}
+
+.hud {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 24px;
+  font-family: "DotGothic16", monospace;
+  color: #d8e3ff;
+  text-shadow: 0 0 6px rgba(8, 15, 33, 0.75);
+}
+
+.debug-panel {
+  align-self: flex-start;
+  background: rgba(6, 12, 24, 0.65);
+  border: 1px solid rgba(92, 132, 255, 0.45);
+  border-radius: 10px;
+  padding: 10px 14px;
+  min-width: 140px;
+  pointer-events: none;
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.35);
+}
+
+.debug-title {
+  font-size: 0.9rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+  color: #8ea7ff;
+}
+
+.debug-row {
+  font-size: 1rem;
+  line-height: 1.2;
+}
+
+.console-panel {
+  background: linear-gradient(180deg, rgba(6, 12, 24, 0.6), rgba(6, 12, 24, 0.85));
+  border: 1px solid rgba(92, 132, 255, 0.35);
+  border-radius: 12px;
+  padding: 12px 16px 14px;
+  max-height: 40vh;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+  box-shadow: 0 18px 32px rgba(0, 0, 0, 0.45);
+}
+
+.console-panel.is-open {
+  border-color: rgba(124, 170, 255, 0.65);
+  box-shadow: 0 18px 32px rgba(0, 0, 0, 0.6);
+}
+
+.console-log {
+  font-size: 0.95rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 4px;
+  min-height: 80px;
+  max-height: 160px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.console-line {
+  white-space: pre-wrap;
+}
+
+.console-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(10, 18, 34, 0.85);
+  border-radius: 8px;
+  padding: 6px 10px;
+  pointer-events: auto;
+  border: 1px solid transparent;
+}
+
+.console-panel.is-open .console-input {
+  border-color: rgba(124, 170, 255, 0.45);
+}
+
+.console-prompt {
+  color: #6f8eff;
+  font-size: 1rem;
+}
+
+.console-input input {
+  flex: 1;
+  font-family: inherit;
+  font-size: 1rem;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  color: inherit;
+  caret-color: #a7b9ff;
+}
+
+.console-input input::placeholder {
+  color: rgba(216, 227, 255, 0.35);
 }
