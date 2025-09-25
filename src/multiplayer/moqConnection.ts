@@ -40,7 +40,7 @@ function exposeDebugHandle() {
 }
 
 async function establish(): Promise<MoqConnection> {
-  const connection = await Moq.Connection.connect(new URL(RELAY_URL));
+  const connection = await Moq.Connection.connect(new URL(RELAY_URL), { websocket: { enabled: false } });
   currentConnection = connection;
   exposeDebugHandle();
 
