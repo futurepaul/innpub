@@ -3,6 +3,8 @@ import * as Moq from "@kixelated/moq";
 export const RELAY_URL = "https://moq.justinmoon.com/anon";
 export const PLAYERS_PREFIX = Moq.Path.from("innpub", "players");
 export const STATE_TRACK = "state.json";
+export const AUDIO_TRACK = "audio.pcm";
+export const SPEAKING_TRACK = "speaking.json";
 
 export type MoqConnection = Moq.Connection.Established;
 

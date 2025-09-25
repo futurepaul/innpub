@@ -18,6 +18,11 @@ import {
   type PlayerProfile,
   type FacingDirection,
   getProfilePictureUrl,
+  subscribeAudioState,
+  setMicrophoneEnabled,
+  setSpeakerEnabled,
+  getAudioState,
+  type AudioControlState,
 } from "./multiplayer/stream";
 
 export function App() {
@@ -42,6 +47,7 @@ export function App() {
   const [profileMap, setProfileMap] = useState<Map<string, PlayerProfile>>(new Map());
   const [headRects, setHeadRects] = useState<Map<string, { rect: { x: number; y: number; width: number; height: number }; facing: FacingDirection }>>(new Map());
   const [playerFacing, setPlayerFacing] = useState<FacingDirection>(1);
+  const [audioState, setAudioState] = useState<AudioControlState>(() => getAudioState());
 
   const appendLog = useCallback((message: string) => {
     setLogMessages(prev => {
@@ -106,6 +112,9 @@ export function App() {
     const unsubscribeProfiles = subscribeProfiles(map => {
       setProfileMap(new Map(map));
     });
+    const unsubscribeAudio = subscribeAudioState(state => {
+      setAudioState(state);
+    });
 
     return () => {
       if (pubkeyRef.current) {
@@ -113,6 +122,7 @@ export function App() {
       }
       unsubscribeProfiles();
       unsubscribePlayers();
+       unsubscribeAudio();
       stopStream();
     };
   }, []);
@@ -355,6 +365,7 @@ export function App() {
     appendLog("Logged out");
     avatarRef.current = null;
     gameInstanceRef.current?.setAvatar(null);
+    void setMicrophoneEnabled(false);
   }, [appendLog]);
 
   const handleConsoleInputKeyDown = useCallback((event: ReactKeyboardEvent<HTMLInputElement>) => {
@@ -365,6 +376,21 @@ export function App() {
       gameInstanceRef.current?.setInputCaptured(false);
     }
   }, []);
+
+  const handleToggleMic = useCallback(async () => {
+    if (!audioState.supported) {
+      return;
+    }
+    try {
+      await setMicrophoneEnabled(!audioState.micEnabled);
+    } catch (error) {
+      console.error("Failed to toggle microphone", error);
+    }
+  }, [audioState.micEnabled, audioState.supported]);
+
+  const handleToggleSpeaker = useCallback(() => {
+    setSpeakerEnabled(!audioState.speakerEnabled);
+  }, [audioState.speakerEnabled]);
 
   const localProfile = pubkey ? profileMap.get(pubkey)?.profile : undefined;
 
@@ -405,7 +431,14 @@ export function App() {
   }, [remotePlayers]);
 
   const overlayEntries = useMemo(() => {
-    const entries: Array<{ npub: string; rect: { x: number; y: number; width: number; height: number }; name: string; avatar: string }> = [];
+    const stateMap = new Map(remotePlayers.map(player => [player.npub, player]));
+    const entries: Array<{
+      npub: string;
+      rect: { x: number; y: number; width: number; height: number };
+      name: string;
+      avatar: string;
+      speakingLevel: number;
+    }> = [];
     headRects.forEach(({ rect }, key) => {
       const profile = profileMap.get(key)?.profile;
       let display = profile ? getDisplayName(profile) : `${key.slice(0, 12)}…`;
@@ -418,10 +451,13 @@ export function App() {
         (key === (npub ?? "") ? avatarUrl ?? undefined : undefined) ??
         `https://robohash.org/${key}.png`;
 
-      entries.push({ npub: key, rect, name: display ?? "Player", avatar });
+      const playerState = stateMap.get(key);
+      const speakingLevel = playerState?.speakingLevel ?? 0;
+
+      entries.push({ npub: key, rect, name: display ?? "Player", avatar, speakingLevel });
     });
     return entries;
-  }, [headRects, profileMap, npub, displayName, avatarUrl]);
+  }, [headRects, profileMap, npub, displayName, avatarUrl, remotePlayers]);
 
   const lines = consoleOpen ? logMessages : logMessages.slice(-1);
   const visibleLogs = lines.length > 0 ? lines : [consoleOpen ? "Console ready" : "Press / to open console"];
@@ -454,6 +490,25 @@ export function App() {
                   Logout
                 </button>
               </div>
+              <div className="audio-controls">
+                <button
+                  type="button"
+                  className={`audio-btn${audioState.micEnabled ? " is-on" : ""}`}
+                  onClick={handleToggleMic}
+                  disabled={!audioState.supported}
+                  title={audioState.supported ? undefined : "Microphone not supported"}
+                >
+                  {audioState.micEnabled ? "Mic On" : "Mic Off"}
+                </button>
+                <button
+                  type="button"
+                  className={`audio-btn${audioState.speakerEnabled ? " is-on" : ""}`}
+                  onClick={handleToggleSpeaker}
+                >
+                  {audioState.speakerEnabled ? "Speaker On" : "Speaker Off"}
+                </button>
+              </div>
+              {audioState.micError ? <div className="audio-error">{audioState.micError}</div> : null}
             </div>
           ) : null}
         </div>
@@ -487,7 +542,7 @@ export function App() {
       {overlayEntries.map(entry => (
         <div
           key={entry.npub}
-          className="avatar-head"
+          className={`avatar-head${entry.speakingLevel > 0.02 ? " is-speaking" : ""}`}
           style={{
             width: `${entry.rect.width}px`,
             height: `${entry.rect.height}px`,
