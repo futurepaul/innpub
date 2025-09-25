@@ -24,6 +24,9 @@ import {
   setSpeakerEnabled,
   getAudioState,
   type AudioControlState,
+  subscribeChats,
+  sendChatMessage,
+  type ChatMessage,
 } from "./multiplayer/stream";
 
 export function App() {
@@ -38,7 +41,7 @@ export function App() {
   const [playerPosition, setPlayerPosition] = useState({ x: 0, y: 0 });
   const [playerRooms, setPlayerRooms] = useState<string[]>([]);
   const [logMessages, setLogMessages] = useState<string[]>([]);
-  const [consoleOpen, setConsoleOpen] = useState(false);
+  const [inputMode, setInputMode] = useState<"command" | "chat" | null>(null);
   const [consoleInput, setConsoleInput] = useState("/");
   const [pubkey, setPubkey] = useState<string | null>(null);
   const [npub, setNpub] = useState<string | null>(null);
@@ -50,6 +53,11 @@ export function App() {
   const [headRects, setHeadRects] = useState<Map<string, { rect: { x: number; y: number; width: number; height: number }; facing: FacingDirection }>>(new Map());
   const [playerFacing, setPlayerFacing] = useState<FacingDirection>(1);
   const [audioState, setAudioState] = useState<AudioControlState>(() => getAudioState());
+  const [chatMap, setChatMap] = useState<Map<string, ChatMessage>>(new Map());
+
+  const consoleOpen = inputMode !== null;
+  const profileMapRef = useRef<Map<string, PlayerProfile>>(new Map());
+  const chatSeenRef = useRef<Map<string, string>>(new Map());
 
   const appendLog = useCallback((message: string) => {
     setLogMessages(prev => {
@@ -106,16 +114,51 @@ export function App() {
   }, [pubkey]);
 
   useEffect(() => {
+    profileMapRef.current = profileMap;
+  }, [profileMap]);
+
+  useEffect(() => {
     startStream();
     const unsubscribePlayers = subscribe(states => {
       remotePlayersRef.current = states;
       setRemotePlayers(states);
     });
     const unsubscribeProfiles = subscribeProfiles(map => {
-      setProfileMap(new Map(map));
+      const clone = new Map(map);
+      profileMapRef.current = clone;
+      setProfileMap(clone);
     });
     const unsubscribeAudio = subscribeAudioState(state => {
       setAudioState(state);
+    });
+    const unsubscribeChats = subscribeChats(map => {
+      const clone = new Map(map);
+      setChatMap(clone);
+
+      const seen = chatSeenRef.current;
+      for (const key of [...seen.keys()]) {
+        if (!clone.has(key)) {
+          seen.delete(key);
+        }
+      }
+
+      clone.forEach(entry => {
+        const lastId = seen.get(entry.npub);
+        if (lastId === entry.id) {
+          return;
+        }
+        seen.set(entry.npub, entry.id);
+
+        const currentPubkey = pubkeyRef.current;
+        const isLocal = currentPubkey ? entry.npub === currentPubkey : false;
+        const profile = profileMapRef.current.get(entry.npub)?.profile;
+        const display = isLocal
+          ? "You"
+          : profile
+            ? getDisplayName(profile) ?? `${entry.npub.slice(0, 12)}…`
+            : `${entry.npub.slice(0, 12)}…`;
+        appendLog(`[Chat] ${display}: ${entry.message}`);
+      });
     });
 
     return () => {
@@ -126,6 +169,9 @@ export function App() {
       unsubscribeProfiles();
       unsubscribePlayers();
       unsubscribeAudio();
+      unsubscribeChats();
+      chatSeenRef.current.clear();
+      setChatMap(new Map());
       stopStream();
     };
   }, []);
@@ -283,50 +329,74 @@ export function App() {
       return;
     }
 
-    if (!pubkey) {
+    if (!pubkey || consoleOpen) {
       gameInstanceRef.current.setInputCaptured(true);
-    } else if (!consoleOpen) {
+    } else {
       gameInstanceRef.current.setInputCaptured(false);
     }
   }, [pubkey, consoleOpen]);
 
   useEffect(() => {
-    const handleOpenConsole = (event: globalThis.KeyboardEvent) => {
-      if (consoleOpen) {
+    const handleShortcut = (event: globalThis.KeyboardEvent) => {
+      if (inputMode) {
         return;
       }
       if (event.defaultPrevented) {
         return;
       }
-      if (event.key === "/" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+
+      const isModifierHeld = event.ctrlKey || event.metaKey || event.altKey;
+      if (!isModifierHeld && event.key === "/") {
         event.preventDefault();
         event.stopPropagation();
-        setConsoleOpen(true);
+        setInputMode("command");
         setConsoleInput("/");
+        gameInstanceRef.current?.setInputCaptured(true);
+        return;
+      }
+
+      if (!isModifierHeld && (event.key === "t" || event.key === "T")) {
+        event.preventDefault();
+        event.stopPropagation();
+        setInputMode("chat");
+        setConsoleInput("");
         gameInstanceRef.current?.setInputCaptured(true);
       }
     };
 
-    window.addEventListener("keydown", handleOpenConsole, { capture: true });
-    return () => window.removeEventListener("keydown", handleOpenConsole, { capture: true });
-  }, [consoleOpen]);
+    window.addEventListener("keydown", handleShortcut, { capture: true });
+    return () => window.removeEventListener("keydown", handleShortcut, { capture: true });
+  }, [inputMode]);
 
   const handleConsoleSubmit = useCallback(
-    (event: FormEvent<HTMLFormElement>) => {
+    async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
+      const mode = inputMode;
       const trimmed = consoleInput.trim();
-      if (trimmed.length > 0 && trimmed !== "/") {
-        appendLog(`> ${trimmed}`);
-        if (trimmed === "/spawn") {
-          gameInstanceRef.current?.spawn();
+
+      if (mode === "chat") {
+        if (trimmed.length > 0) {
+          try {
+            await sendChatMessage(trimmed);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "Failed to send chat";
+            appendLog(`[Chat] ${message}`);
+          }
+        }
+      } else if (mode === "command") {
+        if (trimmed.length > 0 && trimmed !== "/") {
+          appendLog(`> ${trimmed}`);
+          if (trimmed === "/spawn") {
+            gameInstanceRef.current?.spawn();
+          }
         }
       }
 
       setConsoleInput("/");
-      setConsoleOpen(false);
+      setInputMode(null);
       gameInstanceRef.current?.setInputCaptured(false);
     },
-    [appendLog, consoleInput],
+    [appendLog, consoleInput, inputMode],
   );
 
   const handleManualLogin = useCallback(
@@ -372,6 +442,8 @@ export function App() {
     setNpub(null);
     setLoginError(null);
     setNpubInputValue("");
+    setInputMode(null);
+    setConsoleInput("/");
     appendLog("Logged out");
     avatarRef.current = null;
     gameInstanceRef.current?.setAvatar(null);
@@ -383,7 +455,7 @@ export function App() {
     if (event.key === "Escape") {
       event.preventDefault();
       setConsoleInput("/");
-      setConsoleOpen(false);
+      setInputMode(null);
       gameInstanceRef.current?.setInputCaptured(false);
     }
   }, []);
@@ -449,6 +521,7 @@ export function App() {
       name: string;
       avatar: string;
       speakingLevel: number;
+      chat?: ChatMessage;
     }> = [];
     headRects.forEach(({ rect }, key) => {
       const profile = profileMap.get(key)?.profile;
@@ -464,14 +537,16 @@ export function App() {
 
       const playerState = stateMap.get(key);
       const speakingLevel = playerState?.speakingLevel ?? 0;
+      const chat = chatMap.get(key);
 
-      entries.push({ npub: key, rect, name: display ?? "Player", avatar, speakingLevel });
+      entries.push({ npub: key, rect, name: display ?? "Player", avatar, speakingLevel, chat });
     });
     return entries;
-  }, [headRects, profileMap, npub, displayName, avatarUrl, remotePlayers]);
+  }, [headRects, profileMap, npub, displayName, avatarUrl, remotePlayers, chatMap]);
 
   const lines = consoleOpen ? logMessages : logMessages.slice(-1);
-  const visibleLogs = lines.length > 0 ? lines : [consoleOpen ? "Console ready" : "Press / to open console"];
+  const statusMessage = inputMode === "chat" ? "Chat ready" : inputMode === "command" ? "Console ready" : "Press T to chat, / for commands";
+  const visibleLogs = lines.length > 0 ? lines : [statusMessage];
 
   return (
     <div className="viewport" ref={containerRef}>
@@ -544,6 +619,7 @@ export function App() {
                 autoComplete="off"
                 autoCorrect="off"
                 aria-label="Console input"
+                placeholder={inputMode === "chat" ? "Type a message…" : undefined}
               />
             </form>
           )}
@@ -561,6 +637,11 @@ export function App() {
           }}
         >
           <img src={entry.avatar} alt={entry.name} />
+          {entry.chat ? (
+            <div className="chat-bubble" key={entry.chat.id}>
+              <span>{entry.chat.message}</span>
+            </div>
+          ) : null}
           <div className="avatar-label">{entry.name}</div>
         </div>
       ))}

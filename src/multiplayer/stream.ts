@@ -14,6 +14,7 @@ import {
   AUDIO_TRACK,
   SPEAKING_TRACK,
   ROOMS_TRACK,
+  CHAT_TRACK,
 } from "./moqConnection";
 import { AudioCapture, isCaptureSupported } from "./audio/capture";
 import { AudioPlayback } from "./audio/playback";
@@ -35,9 +36,18 @@ export interface PlayerProfile {
   profile?: ProfileContent;
 }
 
+export interface ChatMessage {
+  id: string;
+  npub: string;
+  message: string;
+  ts: number;
+  expiresAt: number;
+}
+
 type PlayerListener = (state: PlayerState[]) => void;
 type ProfileListener = (profiles: Map<string, PlayerProfile>) => void;
 type AudioStateListener = (state: AudioControlState) => void;
+type ChatListener = (messages: Map<string, ChatMessage>) => void;
 
 interface RemoteSubscription {
   path: Moq.Path.Valid;
@@ -45,6 +55,7 @@ interface RemoteSubscription {
   audioTrack?: Moq.Track;
   speakingTrack?: Moq.Track;
   roomsTrack?: Moq.Track;
+  chatTrack?: Moq.Track;
   sourceKey: string;
   lastSeen: number;
   npub?: string;
@@ -60,6 +71,7 @@ interface LocalSession {
 const listeners = new Set<PlayerListener>();
 const profileListeners = new Set<ProfileListener>();
 const audioStateListeners = new Set<AudioStateListener>();
+const chatListeners = new Set<ChatListener>();
 
 const players = new Map<string, PlayerState>();
 const stateBySource = new Map<string, PlayerState>();
@@ -68,12 +80,14 @@ const profiles = new Map<string, PlayerProfile>();
 const profileSubscriptions = new Map<string, { unsubscribe: () => void }>();
 const speakingLevels = new Map<string, number>();
 const roomsByNpub = new Map<string, string[]>();
+const chatMessages = new Map<string, ChatMessage>();
 
 const remoteSubscriptions = new Map<string, RemoteSubscription>();
 const stateSubscribers = new Set<Moq.Track>();
 const audioSubscribers = new Set<Moq.Track>();
 const speakingSubscribers = new Set<Moq.Track>();
 const roomsSubscribers = new Set<Moq.Track>();
+const chatSubscribers = new Set<Moq.Track>();
 
 let started = false;
 let pruneTimerId: ReturnType<typeof setInterval> | null = null;
@@ -95,6 +109,7 @@ let lastSpeakingSentAt = 0;
 let beforeUnloadRegistered = false;
 let localAudioIdentity: string | null = null;
 let localRooms: string[] = [];
+let chatCounter = 0;
 
 const LOCAL_SOURCE_KEY = "local";
 const HEARTBEAT_INTERVAL_MS = 1000;
@@ -102,6 +117,8 @@ const STALE_TIMEOUT_MS = 5000;
 const EPSILON = 0.25;
 const TAB_SUFFIX = Math.random().toString(36).slice(2, 8);
 const SPEAKING_THROTTLE_MS = 150;
+const CHAT_TTL_MS = 7000;
+const MAX_CHAT_LENGTH = 240;
 
 export interface AudioControlState {
   micEnabled: boolean;
@@ -208,6 +225,41 @@ function sendRooms(track: Moq.Track) {
 function broadcastRoomsUpdate(): void {
   for (const track of [...roomsSubscribers]) {
     sendRooms(track);
+  }
+}
+
+function broadcastChat(entry: ChatMessage): void {
+  const payload = {
+    npub: entry.npub,
+    message: entry.message,
+    ts: entry.ts,
+    id: entry.id,
+  };
+
+  for (const track of [...chatSubscribers]) {
+    try {
+      track.writeJson(payload);
+    } catch (error) {
+      console.warn("failed to write chat message", error);
+      chatSubscribers.delete(track);
+    }
+  }
+}
+
+function pruneChatMessages() {
+  if (chatMessages.size === 0) {
+    return;
+  }
+  const nowTs = Date.now();
+  let mutated = false;
+  for (const [npub, entry] of chatMessages) {
+    if (entry.expiresAt <= nowTs) {
+      chatMessages.delete(npub);
+      mutated = true;
+    }
+  }
+  if (mutated) {
+    notifyChats();
   }
 }
 
@@ -525,6 +577,28 @@ function notifyProfiles() {
   }
 }
 
+function notifyChats() {
+  const snapshot = new Map(chatMessages);
+  for (const listener of chatListeners) {
+    try {
+      listener(snapshot);
+    } catch (error) {
+      console.error("chat listener failed", error);
+    }
+  }
+}
+
+function setChatEntry(entry: ChatMessage) {
+  chatMessages.set(entry.npub, entry);
+  notifyChats();
+}
+
+function clearChatEntry(npub: string) {
+  if (chatMessages.delete(npub)) {
+    notifyChats();
+  }
+}
+
 function trackProfile(npub: string) {
   if (profileSubscriptions.has(npub)) {
     return;
@@ -712,6 +786,14 @@ function runPublishLoop(broadcast: Moq.Broadcast) {
             speakingSubscribers.delete(track);
           });
         broadcastSpeakingLevel(true);
+      } else if (request.track.name === CHAT_TRACK) {
+        const track = request.track;
+        chatSubscribers.add(track);
+        track.closed
+          .catch(() => undefined)
+          .finally(() => {
+            chatSubscribers.delete(track);
+          });
       } else {
         request.track.close(new Error(`Unsupported track ${request.track.name}`));
       }
@@ -748,6 +830,9 @@ function handleDisconnected() {
     try {
       sub.roomsTrack?.close();
     } catch {}
+    try {
+      sub.chatTrack?.close();
+    } catch {}
     audioPlayback.close(sub.path);
   }
   remoteSubscriptions.clear();
@@ -755,9 +840,14 @@ function handleDisconnected() {
   audioSubscribers.clear();
   speakingSubscribers.clear();
   roomsSubscribers.clear();
+  chatSubscribers.clear();
   clearRemoteSources();
   teardownLocalSession();
   audioPlayback.shutdown();
+  if (chatMessages.size > 0) {
+    chatMessages.clear();
+    notifyChats();
+  }
 }
 
 async function startAnnouncementLoop(connection: Moq.Connection.Established, signal: AbortSignal) {
@@ -968,6 +1058,45 @@ function subscribeToRemote(path: Moq.Path.Valid) {
   } catch (error) {
     console.warn(`failed to subscribe to ${SPEAKING_TRACK} for ${path}`, error);
   }
+
+  try {
+    const chatTrack = broadcast.subscribe(CHAT_TRACK, 0);
+    subscription.chatTrack = chatTrack;
+    chatTrack.closed
+      .catch(() => undefined)
+      .finally(() => {
+        if (subscription.chatTrack === chatTrack) {
+          subscription.chatTrack = undefined;
+        }
+      });
+
+    (async () => {
+      for (;;) {
+        const payload = await chatTrack.readJson();
+        if (!payload) {
+          break;
+        }
+        const parsed = parseChatPayload(payload);
+        if (!parsed) {
+          continue;
+        }
+        const expiresAt = Math.max(parsed.ts, Date.now()) + CHAT_TTL_MS;
+        const entry: ChatMessage = {
+          npub: parsed.npub,
+          message: parsed.message,
+          ts: parsed.ts,
+          id: parsed.id,
+          expiresAt,
+        };
+        setChatEntry(entry);
+        trackProfile(parsed.npub);
+      }
+    })().catch(error => {
+      console.warn(`chat subscription failed for ${path}`, error);
+    });
+  } catch (error) {
+    console.warn(`failed to subscribe to ${CHAT_TRACK} for ${path}`, error);
+  }
 }
 
 function unsubscribeFromRemote(path: Moq.Path.Valid) {
@@ -988,10 +1117,14 @@ function unsubscribeFromRemote(path: Moq.Path.Valid) {
   try {
     subscription.roomsTrack?.close();
   } catch {}
+  try {
+    subscription.chatTrack?.close();
+  } catch {}
   audioPlayback.close(path);
   removeSource(subscription.sourceKey);
   if (subscription.npub) {
     setRooms(subscription.npub, []);
+    clearChatEntry(subscription.npub);
   }
   subscription.pendingRooms = undefined;
 }
@@ -1065,6 +1198,34 @@ function parseSpeakingLevel(payload: unknown): number | undefined {
   return clamp01(level);
 }
 
+function parseChatPayload(payload: unknown): { npub: string; message: string; ts: number; id: string } | undefined {
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+  const data = payload as Record<string, unknown>;
+  const npub = normalizeIdentifier(data.npub) ?? (typeof data.npub === "string" ? data.npub : null);
+  if (!npub) {
+    return undefined;
+  }
+  const messageRaw = data.message;
+  if (typeof messageRaw !== "string") {
+    return undefined;
+  }
+  const message = messageRaw.trim();
+  if (!message) {
+    return undefined;
+  }
+  const normalized = message.slice(0, MAX_CHAT_LENGTH);
+  const tsValue = typeof data.ts === "number" && Number.isFinite(data.ts) ? data.ts : Date.now();
+  const idValue = typeof data.id === "string" && data.id.trim().length > 0 ? data.id : `${npub}:${tsValue}`;
+  return {
+    npub,
+    message: normalized,
+    ts: tsValue,
+    id: idValue,
+  };
+}
+
 function applyRemoteSpeakingLevel(npub: string, level: number) {
   setSpeakingLevel(npub, clamp01(level));
 }
@@ -1093,6 +1254,7 @@ function cleanupProfileIfOrphan(npub: string) {
   }
   clearRooms(npub);
   clearSpeakingLevel(npub);
+  clearChatEntry(npub);
   untrackProfile(npub);
 }
 
@@ -1166,7 +1328,10 @@ function startPruneTimer() {
     return;
   }
   const scheduler = typeof window !== "undefined" && window.setInterval ? window.setInterval.bind(window) : setInterval;
-  pruneTimerId = scheduler(pruneRemoteSubscriptions, 1000);
+  pruneTimerId = scheduler(() => {
+    pruneRemoteSubscriptions();
+    pruneChatMessages();
+  }, 1000);
 }
 
 function stopPruneTimer() {
@@ -1198,6 +1363,14 @@ export function subscribeAudioState(callback: AudioStateListener) {
   callback(audioState);
   return () => {
     audioStateListeners.delete(callback);
+  };
+}
+
+export function subscribeChats(callback: ChatListener) {
+  chatListeners.add(callback);
+  callback(new Map(chatMessages));
+  return () => {
+    chatListeners.delete(callback);
   };
 }
 
@@ -1285,6 +1458,35 @@ export function removePlayer(npub: string) {
 
   untrackProfile(npub);
   clearRooms(npub);
+  clearChatEntry(npub);
+}
+
+export async function sendChatMessage(message: string): Promise<ChatMessage | null> {
+  const trimmed = message.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const identity = localState?.npub ?? pendingLocalIdentity ?? localSession?.npub;
+  if (!identity) {
+    throw new Error("Login before sending chat messages");
+  }
+
+  const normalized = trimmed.slice(0, MAX_CHAT_LENGTH);
+  const timestamp = Date.now();
+  const entry: ChatMessage = {
+    id: `${identity}:${timestamp}:${chatCounter += 1}`,
+    npub: identity,
+    message: normalized,
+    ts: timestamp,
+    expiresAt: timestamp + CHAT_TTL_MS,
+  };
+
+  trackProfile(identity);
+  setChatEntry(entry);
+  broadcastChat(entry);
+
+  return entry;
 }
 
 export async function setMicrophoneEnabled(enabled: boolean): Promise<void> {
