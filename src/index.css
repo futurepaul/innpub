@@ -181,13 +181,6 @@ body {
   box-shadow: 0 12px 24px rgba(0, 0, 0, 0.35);
 }
 
-.login-panel form,
-.login-controls {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
 .login-form {
   display: flex;
   align-items: center;
@@ -206,7 +199,7 @@ body {
 }
 
 .login-form button,
-.login-controls .ext-login,
+.ext-login,
 .login-summary .btn-link {
   background: rgba(124, 170, 255, 0.2);
   border: 1px solid rgba(124, 170, 255, 0.45);
@@ -219,18 +212,18 @@ body {
   transition: background 0.2s ease;
 }
 
-.login-controls .ext-login {
+.ext-login {
   text-align: center;
 }
 
 .login-form button:disabled,
-.login-controls .ext-login:disabled {
+.ext-login:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }
 
 .login-form button:not(:disabled):hover,
-.login-controls .ext-login:not(:disabled):hover,
+.ext-login:not(:disabled):hover,
 .login-summary .btn-link:hover {
   background: rgba(124, 170, 255, 0.35);
 }
@@ -281,6 +274,47 @@ body {
 .login-error {
   color: #ff8080;
   font-size: 0.8rem;
+}
+
+.login-overlay {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 50% 30%, rgba(18, 26, 44, 0.9), rgba(4, 7, 14, 0.94));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 20;
+  pointer-events: auto;
+}
+
+.login-modal {
+  background: rgba(10, 18, 34, 0.92);
+  border: 1px solid rgba(124, 170, 255, 0.45);
+  border-radius: 16px;
+  padding: 32px;
+  max-width: 420px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.55);
+  pointer-events: auto;
+  text-align: center;
+}
+
+.login-modal h1 {
+  font-size: 2rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #c8d7ff;
+  margin: 0;
+}
+
+.login-description {
+  font-size: 0.95rem;
+  color: rgba(216, 227, 255, 0.75);
+  margin: 0;
 }
 
 .console-prompt {

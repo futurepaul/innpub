@@ -5,10 +5,32 @@ import "./index.css";
 import { initGame, type GameInstance } from "./game/initGame";
 import { Application } from "pixi.js";
 import { ExtensionSigner } from "applesauce-signers";
-import { useObservableMemo } from "applesauce-react/hooks";
-import { getDisplayName, getProfilePicture } from "applesauce-core/helpers";
+import { getDisplayName, getProfilePicture, type ProfileContent } from "applesauce-core/helpers";
 import { decode as decodeNip19, npubEncode } from "nostr-tools/nip19";
 import { eventStore, DEFAULT_RELAYS } from "./nostr/client";
+
+function useProfile(pubkey: string | null) {
+  const [profile, setProfile] = useState<ProfileContent | undefined>(undefined);
+
+  useEffect(() => {
+    setProfile(undefined);
+
+    if (!pubkey) {
+      return;
+    }
+
+    const pointer = { pubkey, relays: DEFAULT_RELAYS };
+    const subscription = eventStore.profile(pointer).subscribe(value => {
+      setProfile(value);
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [pubkey]);
+
+  return profile;
+}
 
 export function App() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -192,6 +214,18 @@ export function App() {
   }, [consoleOpen, logMessages.length]);
 
   useEffect(() => {
+    if (!gameInstanceRef.current) {
+      return;
+    }
+
+    if (!pubkey) {
+      gameInstanceRef.current.setInputCaptured(true);
+    } else if (!consoleOpen) {
+      gameInstanceRef.current.setInputCaptured(false);
+    }
+  }, [pubkey, consoleOpen]);
+
+  useEffect(() => {
     const handleOpenConsole = (event: globalThis.KeyboardEvent) => {
       if (consoleOpen) {
         return;
@@ -264,6 +298,7 @@ export function App() {
     setLoginError(null);
     setNpubInputValue("");
     appendLog("Logged out");
+    avatarRef.current = null;
     gameInstanceRef.current?.setAvatar(null);
   }, [appendLog]);
 
@@ -276,10 +311,7 @@ export function App() {
     }
   }, []);
 
-  const profile = useObservableMemo(
-    () => (pubkey ? eventStore.profile({ pubkey, relays: DEFAULT_RELAYS }) : undefined),
-    [pubkey],
-  );
+  const profile = useProfile(pubkey);
 
   const displayName = useMemo(() => {
     const name = profile ? getDisplayName(profile) : null;
@@ -321,8 +353,8 @@ export function App() {
             <div className="debug-row">y: {Math.round(playerPosition.y)}</div>
           </div>
 
-          <div className="login-panel">
-            {pubkey ? (
+          {pubkey ? (
+            <div className="login-panel">
               <div className="login-summary">
                 {avatarUrl ? (
                   <img className="login-avatar" src={avatarUrl} alt="Avatar" />
@@ -339,32 +371,8 @@ export function App() {
                   Logout
                 </button>
               </div>
-            ) : (
-              <div className="login-controls">
-                <form className="login-form" onSubmit={handleManualLogin}>
-                  <input
-                    type="text"
-                    value={npubInputValue}
-                    onChange={event => {
-                      setNpubInputValue(event.target.value);
-                      setLoginError(null);
-                    }}
-                    placeholder="Enter npub or hex"
-                    spellCheck={false}
-                    autoComplete="off"
-                    autoCorrect="off"
-                  />
-                  <button type="submit" disabled={loginPending}>
-                    Use npub
-                  </button>
-                </form>
-                <button type="button" className="ext-login" onClick={handleExtensionLogin} disabled={loginPending}>
-                  {loginPending ? "Connecting…" : "Login with NIP-07"}
-                </button>
-              </div>
-            )}
-            {loginError && <div className="login-error">{loginError}</div>}
-          </div>
+            </div>
+          ) : null}
         </div>
 
         <div className={`console-panel${consoleOpen ? " is-open" : ""}`}>
@@ -392,6 +400,36 @@ export function App() {
           )}
         </div>
       </div>
+
+      {!pubkey && (
+        <div className="login-overlay">
+          <div className="login-modal">
+            <h1>InnPub</h1>
+            <p className="login-description">Sign in with your Nostr public key to enter the tavern.</p>
+            <form className="login-form" onSubmit={handleManualLogin}>
+              <input
+                type="text"
+                value={npubInputValue}
+                onChange={event => {
+                  setNpubInputValue(event.target.value);
+                  setLoginError(null);
+                }}
+                placeholder="Paste your npub or hex public key"
+                spellCheck={false}
+                autoComplete="off"
+                autoCorrect="off"
+              />
+              <button type="submit" disabled={loginPending}>
+                Continue
+              </button>
+            </form>
+            <button type="button" className="ext-login" onClick={handleExtensionLogin} disabled={loginPending}>
+              {loginPending ? "Connecting…" : "Login with NIP-07"}
+            </button>
+            {loginError && <div className="login-error">{loginError}</div>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
