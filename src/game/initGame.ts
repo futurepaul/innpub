@@ -19,6 +19,7 @@ export type GameHooks = {
 export type GameInstance = {
   destroy: () => void;
   setInputCaptured: (captured: boolean) => void;
+  spawn: () => void;
 };
 
 type TileLayer = {
@@ -166,7 +167,7 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     return (r << 16) | (g << 8) | b;
   };
 
-  const isForegroundLayer = (name: string) => name.trim().toLowerCase().startsWith("foreground");
+  const isForegroundLayer = (name: string) => /foreground/i.test(name.trim());
 
   const createTileLayer = (layer: TileLayer) => {
     const layerContainer = new Container();
@@ -216,8 +217,10 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
   player.width = map.tileWidth;
   player.height = map.tileHeight * 2;
   player.roundPixels = true;
-  player.x = Math.round(mapPixelWidth / 2 - player.width / 2);
-  player.y = Math.round(mapPixelHeight / 2 - player.height);
+  const spawnX = Math.round(mapPixelWidth / 2 - player.width * 1.5);
+  const spawnY = Math.round(mapPixelHeight / 2 - player.height);
+  player.x = spawnX;
+  player.y = spawnY;
   scene.addChild(player);
 
   for (const layer of foregroundLayers) {
@@ -461,9 +464,19 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     }
   };
 
+  const resetPlayer = () => {
+    player.x = spawnX;
+    player.y = spawnY;
+    clampToMap();
+    updateFootBounds();
+    updateRooms();
+    reportPosition();
+  };
+
   return {
     destroy,
     setInputCaptured,
+    spawn: resetPlayer,
   };
 }
 

@@ -167,6 +167,9 @@ export function App() {
       const trimmed = consoleInput.trim();
       if (trimmed.length > 0 && trimmed !== "/") {
         appendLog(`> ${trimmed}`);
+        if (trimmed === "/spawn") {
+          gameInstanceRef.current?.spawn();
+        }
       }
 
       setConsoleInput("/");
