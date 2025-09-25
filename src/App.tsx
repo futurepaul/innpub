@@ -5,32 +5,20 @@ import "./index.css";
 import { initGame, type GameInstance } from "./game/initGame";
 import { Application } from "pixi.js";
 import { ExtensionSigner } from "applesauce-signers";
-import { getDisplayName, getProfilePicture, type ProfileContent } from "applesauce-core/helpers";
+import { getDisplayName } from "applesauce-core/helpers";
 import { decode as decodeNip19, npubEncode } from "nostr-tools/nip19";
-import { eventStore, DEFAULT_RELAYS } from "./nostr/client";
-
-function useProfile(pubkey: string | null) {
-  const [profile, setProfile] = useState<ProfileContent | undefined>(undefined);
-
-  useEffect(() => {
-    setProfile(undefined);
-
-    if (!pubkey) {
-      return;
-    }
-
-    const pointer = { pubkey, relays: DEFAULT_RELAYS };
-    const subscription = eventStore.profile(pointer).subscribe(value => {
-      setProfile(value);
-    });
-
-    return () => {
-      subscription.unsubscribe();
-    };
-  }, [pubkey]);
-
-  return profile;
-}
+import {
+  startStream,
+  stopStream,
+  subscribe,
+  subscribeProfiles,
+  updateLocalPlayer,
+  removePlayer,
+  type PlayerState,
+  type PlayerProfile,
+  type FacingDirection,
+  getProfilePictureUrl,
+} from "./multiplayer/stream";
 
 export function App() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -38,6 +26,8 @@ export function App() {
   const gameInstanceRef = useRef<GameInstance | null>(null);
   const consoleLogRef = useRef<HTMLDivElement>(null);
   const avatarRef = useRef<string | null>(null);
+  const pubkeyRef = useRef<string | null>(null);
+  const remotePlayersRef = useRef<PlayerState[]>([]);
 
   const [playerPosition, setPlayerPosition] = useState({ x: 0, y: 0 });
   const [logMessages, setLogMessages] = useState<string[]>([]);
@@ -48,7 +38,10 @@ export function App() {
   const [npubInputValue, setNpubInputValue] = useState("");
   const [loginError, setLoginError] = useState<string | null>(null);
   const [loginPending, setLoginPending] = useState(false);
-  const [headRect, setHeadRect] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
+  const [remotePlayers, setRemotePlayers] = useState<PlayerState[]>([]);
+  const [profileMap, setProfileMap] = useState<Map<string, PlayerProfile>>(new Map());
+  const [headRects, setHeadRects] = useState<Map<string, { rect: { x: number; y: number; width: number; height: number }; facing: FacingDirection }>>(new Map());
+  const [playerFacing, setPlayerFacing] = useState<FacingDirection>(1);
 
   const appendLog = useCallback((message: string) => {
     setLogMessages(prev => {
@@ -89,6 +82,7 @@ export function App() {
     (hex: string) => {
       const normalized = hex.toLowerCase();
       const encoded = npubEncode(normalized);
+      pubkeyRef.current = normalized;
       setPubkey(normalized);
       setNpub(encoded);
       setLoginError(null);
@@ -98,6 +92,30 @@ export function App() {
     },
     [appendLog],
   );
+
+  useEffect(() => {
+    pubkeyRef.current = pubkey;
+  }, [pubkey]);
+
+  useEffect(() => {
+    startStream();
+    const unsubscribePlayers = subscribe(states => {
+      remotePlayersRef.current = states;
+      setRemotePlayers(states);
+    });
+    const unsubscribeProfiles = subscribeProfiles(map => {
+      setProfileMap(new Map(map));
+    });
+
+    return () => {
+      if (pubkeyRef.current) {
+        removePlayer(pubkeyRef.current);
+      }
+      unsubscribeProfiles();
+      unsubscribePlayers();
+      stopStream();
+    };
+  }, []);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -159,12 +177,37 @@ export function App() {
         container.appendChild(app.canvas);
         canvasAttached = true;
         const game = await initGame(app, {
-          onPlayerPosition: position => setPlayerPosition(position),
+          onPlayerPosition: data => {
+            setPlayerPosition({ x: data.x, y: data.y });
+            setPlayerFacing(data.facing);
+            const currentNpub = pubkeyRef.current;
+            if (currentNpub) {
+              updateLocalPlayer({ npub: currentNpub, x: data.x, y: data.y, facing: data.facing });
+            }
+          },
           onConsoleMessage: appendLog,
-          onHeadPosition: rect => setHeadRect(rect),
+          onHeadPosition: (id, rect, facing) => {
+            const key = id === "local" ? pubkeyRef.current : id;
+            if (!key) {
+              return;
+            }
+
+            setHeadRects(prev => {
+              const next = new Map(prev);
+              if (rect) {
+                next.set(key, { rect, facing });
+              } else {
+                next.delete(key);
+              }
+              return next;
+            });
+          },
         });
         gameInstanceRef.current = game;
         game.setAvatar(avatarRef.current);
+        const currentNpub = pubkeyRef.current;
+        const remotes = remotePlayersRef.current.filter(player => player.npub !== currentNpub);
+        game.syncPlayers(remotes);
         cleanup = () => {
           game.destroy();
           gameInstanceRef.current = null;
@@ -295,6 +338,16 @@ export function App() {
   }, [finalizeLogin]);
 
   const handleLogout = useCallback(() => {
+    const previousNpub = pubkeyRef.current;
+    if (previousNpub) {
+      removePlayer(previousNpub);
+      setHeadRects(prev => {
+        const next = new Map(prev);
+        next.delete(previousNpub);
+        return next;
+      });
+    }
+    pubkeyRef.current = null;
     setPubkey(null);
     setNpub(null);
     setLoginError(null);
@@ -313,10 +366,10 @@ export function App() {
     }
   }, []);
 
-  const profile = useProfile(pubkey);
+  const localProfile = pubkey ? profileMap.get(pubkey)?.profile : undefined;
 
   const displayName = useMemo(() => {
-    const name = profile ? getDisplayName(profile) : null;
+    const name = localProfile ? getDisplayName(localProfile) : null;
     if (name) {
       return name;
     }
@@ -324,15 +377,14 @@ export function App() {
       return `${npub.slice(0, 12)}…`;
     }
     return null;
-  }, [profile, npub]);
+  }, [localProfile, npub]);
 
   const avatarUrl = useMemo(() => {
     if (!pubkey) {
       return null;
     }
-    const url = getProfilePicture(profile ?? undefined, undefined);
-    return url ?? null;
-  }, [profile, pubkey]);
+    return getProfilePictureUrl(pubkey) ?? null;
+  }, [pubkey, profileMap]);
 
   useEffect(() => {
     avatarRef.current = avatarUrl;
@@ -342,7 +394,34 @@ export function App() {
     gameInstanceRef.current.setAvatar(avatarUrl);
   }, [avatarUrl]);
 
-  const headDisplayRect = headRect;
+  useEffect(() => {
+    const game = gameInstanceRef.current;
+    if (!game) {
+      return;
+    }
+    const currentNpub = pubkeyRef.current;
+    const remotes = remotePlayers.filter(player => player.npub !== currentNpub);
+    game.syncPlayers(remotes);
+  }, [remotePlayers]);
+
+  const overlayEntries = useMemo(() => {
+    const entries: Array<{ npub: string; rect: { x: number; y: number; width: number; height: number }; name: string; avatar: string }> = [];
+    headRects.forEach(({ rect }, key) => {
+      const profile = profileMap.get(key)?.profile;
+      let display = profile ? getDisplayName(profile) : `${key.slice(0, 12)}…`;
+      if (key === (npub ?? "")) {
+        display = displayName ?? display;
+      }
+
+      const avatar =
+        getProfilePictureUrl(key) ??
+        (key === (npub ?? "") ? avatarUrl ?? undefined : undefined) ??
+        `https://robohash.org/${key}.png`;
+
+      entries.push({ npub: key, rect, name: display ?? "Player", avatar });
+    });
+    return entries;
+  }, [headRects, profileMap, npub, displayName, avatarUrl]);
 
   const lines = consoleOpen ? logMessages : logMessages.slice(-1);
   const visibleLogs = lines.length > 0 ? lines : [consoleOpen ? "Console ready" : "Press / to open console"];
@@ -405,19 +484,20 @@ export function App() {
         </div>
       </div>
 
-      {pubkey && avatarUrl && headDisplayRect && (
+      {overlayEntries.map(entry => (
         <div
+          key={entry.npub}
           className="avatar-head"
           style={{
-            width: `${headDisplayRect.width}px`,
-            height: `${headDisplayRect.height}px`,
-            transform: `translate3d(${headDisplayRect.x}px, ${headDisplayRect.y}px, 0)`,
+            width: `${entry.rect.width}px`,
+            height: `${entry.rect.height}px`,
+            transform: `translate3d(${entry.rect.x}px, ${entry.rect.y}px, 0)`,
           }}
         >
-          <img src={avatarUrl} alt={displayName ?? "Player"} />
-          <div className="avatar-label">{displayName ?? (npub ? `${npub.slice(0, 12)}…` : "Anon")}</div>
+          <img src={entry.avatar} alt={entry.name} />
+          <div className="avatar-label">{entry.name}</div>
         </div>
-      )}
+      ))}
 
       {!pubkey && (
         <div className="login-overlay">

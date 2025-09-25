@@ -10,12 +10,13 @@ import {
   type Ticker,
   AnimatedSprite,
 } from "pixi.js";
+import type { FacingDirection, PlayerState } from "../multiplayer/stream";
 import { XMLParser } from "fast-xml-parser";
 
 export type GameHooks = {
-  onPlayerPosition?: (position: { x: number; y: number }) => void;
+  onPlayerPosition?: (position: { x: number; y: number; facing: FacingDirection }) => void;
   onConsoleMessage?: (message: string) => void;
-  onHeadPosition?: (rect: { x: number; y: number; width: number; height: number } | null) => void;
+  onHeadPosition?: (id: string, rect: { x: number; y: number; width: number; height: number } | null, facing: FacingDirection) => void;
 };
 
 export type GameInstance = {
@@ -23,6 +24,7 @@ export type GameInstance = {
   setInputCaptured: (captured: boolean) => void;
   spawn: () => void;
   setAvatar: (url?: string | null) => void;
+  syncPlayers: (players: PlayerState[]) => void;
 };
 
 type TileLayer = {
@@ -240,42 +242,112 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
   const playerWidth = map.tileWidth;
   const playerHeight = map.tileHeight * 2;
 
-  const player = new Container();
-  player.eventMode = "none";
-  player.label = "player";
+  const createPlayerContainer = () => {
+    const container = new Container();
+    container.eventMode = "none";
+    container.label = "player";
 
-  const headSprite = new Sprite(WHITE_TEXTURE);
-  headSprite.width = playerWidth;
-  headSprite.height = map.tileHeight;
-  headSprite.roundPixels = true;
-  headSprite.tint = 0xffffff;
-  headSprite.anchor.set(0.5, 0);
-  headSprite.x = playerWidth / 2;
+    const head = new Sprite(WHITE_TEXTURE);
+    head.width = playerWidth;
+    head.height = map.tileHeight;
+    head.roundPixels = true;
+    head.tint = 0xffffff;
+    head.anchor.set(0.5, 0);
+    head.x = playerWidth / 2;
 
-  const bodySprite = new AnimatedSprite(walkTextures.length > 0 ? walkTextures : [WHITE_TEXTURE]);
-  bodySprite.width = playerWidth;
-  bodySprite.height = map.tileHeight;
-  bodySprite.y = map.tileHeight;
-  bodySprite.roundPixels = true;
-  bodySprite.animationSpeed = 0.18;
-  bodySprite.loop = true;
-  bodySprite.anchor.set(0.5, 0);
-  bodySprite.x = playerWidth / 2;
-  bodySprite.scale.x = 1;
-  if (walkTextures.length > 0) {
-    bodySprite.gotoAndStop(0);
-    bodySprite.stop();
-  } else {
-    bodySprite.tint = 0x6ee7b7;
-  }
+    const body = new AnimatedSprite(walkTextures.length > 0 ? walkTextures : [WHITE_TEXTURE]);
+    body.width = playerWidth;
+    body.height = map.tileHeight;
+    body.y = map.tileHeight;
+    body.roundPixels = true;
+    body.animationSpeed = 0.18;
+    body.loop = true;
+    body.anchor.set(0.5, 0);
+    body.x = playerWidth / 2;
+    body.scale.x = 1;
+    if (walkTextures.length > 0) {
+      body.gotoAndStop(0);
+      body.stop();
+    } else {
+      body.tint = 0x6ee7b7;
+    }
 
-  player.addChild(headSprite, bodySprite);
+    container.addChild(head, body);
+
+    return { container, head, body };
+  };
+
+  const { container: player, head: headSprite, body: bodySprite } = createPlayerContainer();
 
   const spawnX = Math.round(mapPixelWidth / 2 - playerWidth * 1.5);
   const spawnY = Math.round(mapPixelHeight / 2 - playerHeight);
   player.x = spawnX;
   player.y = spawnY;
   scene.addChild(player);
+
+  type ManagedPlayer = {
+    container: Container;
+    head: Sprite;
+    body: AnimatedSprite;
+    lastState?: PlayerState;
+    lastFacing: FacingDirection;
+    lastHorizontal: number;
+  };
+
+  const remotePlayers = new Map<string, ManagedPlayer>();
+
+  const getOrCreateRemote = (state: PlayerState): ManagedPlayer => {
+    let managed = remotePlayers.get(state.npub);
+    if (!managed) {
+      const { container, head, body } = createPlayerContainer();
+      container.x = state.x;
+      container.y = state.y;
+      managed = {
+        container,
+        head,
+        body,
+        lastFacing: state.facing,
+        lastHorizontal: state.facing === 0 ? -1 : 1,
+      };
+      remotePlayers.set(state.npub, managed);
+      scene.addChild(container);
+    }
+    return managed;
+  };
+
+  const updateRemotePlayer = (managed: ManagedPlayer, state: PlayerState) => {
+    const prev = managed.lastState;
+    const dx = prev ? state.x - prev.x : 0;
+    const dy = prev ? state.y - prev.y : 0;
+    const moving = Math.abs(dx) > 0.1 || Math.abs(dy) > 0.1;
+
+    managed.container.x = state.x;
+    managed.container.y = state.y;
+
+    let horizontal = managed.lastHorizontal ?? 1;
+    if (state.facing === 0) {
+      horizontal = -1;
+    } else if (state.facing === 1) {
+      horizontal = 1;
+    }
+
+    managed.body.scale.x = horizontal;
+    managed.lastHorizontal = horizontal;
+    managed.lastFacing = state.facing;
+
+    if (moving && walkTextures.length > 0) {
+      if (!managed.body.playing) {
+        managed.body.textures = walkTextures;
+        managed.body.animationSpeed = 0.18;
+        managed.body.play();
+      }
+    } else if (managed.body.playing) {
+      managed.body.stop();
+    }
+
+    managed.lastState = state;
+    emitHeadPositionFor(state.npub, managed.head, state.facing);
+  };
 
   for (const layer of foregroundLayers) {
     scene.addChild(createTileLayer(layer));
@@ -302,7 +374,8 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
   const pressed = new Set<Direction>();
   let inputCaptured = false;
   let isWalking = false;
-  let lastDirection = 1;
+  let lastFacing: FacingDirection = 1;
+  let lastHorizontalDirection = 1;
 
   const normaliseKey = (key: string): Direction | null => {
     switch (key) {
@@ -375,7 +448,11 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
   };
 
   const reportPosition = () => {
-    hooks.onPlayerPosition?.({ x: player.x, y: player.y });
+    hooks.onPlayerPosition?.({
+      x: player.x,
+      y: player.y,
+      facing: lastFacing,
+    });
   };
 
   let activeRooms = new Set<string>();
@@ -467,25 +544,49 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     scene.position.set(offsetX, offsetY);
   };
 
-  const emitHeadPosition = () => {
+  const emitHeadPositionFor = (
+    id: string,
+    target: Sprite,
+    facingDir: FacingDirection,
+  ) => {
     if (!hooks.onHeadPosition || !app.renderer) {
       return;
     }
 
-    const bounds = headSprite.getBounds();
+    const bounds = target.getBounds();
     const canvas = app.renderer.canvas as HTMLCanvasElement;
-    const canvasWidth = canvas.clientWidth || canvas.width;
-    const canvasHeight = canvas.clientHeight || canvas.height;
-    const cssScaleX = canvasWidth / canvas.width;
-    const cssScaleY = canvasHeight / canvas.height;
-    const headOffset = isWalking ? lastDirection * 8 : 0;
+    const cssScaleX = (canvas.clientWidth || canvas.width) / canvas.width;
+    const cssScaleY = (canvas.clientHeight || canvas.height) / canvas.height;
+    const headOffset = facingDir === 0 ? -8 : facingDir === 1 ? 8 : 0;
 
-    hooks.onHeadPosition({
+    hooks.onHeadPosition(id, {
       x: (bounds.x + headOffset) * cssScaleX,
       y: bounds.y * cssScaleY,
       width: bounds.width * cssScaleX,
       height: bounds.height * cssScaleY,
-    });
+    }, facingDir);
+  };
+
+  const emitHeadPosition = () => {
+    emitHeadPositionFor("local", headSprite, lastFacing);
+  };
+
+  const syncPlayers = (states: PlayerState[]) => {
+    const seen = new Set<string>();
+
+    for (const state of states) {
+      const managed = getOrCreateRemote(state);
+      updateRemotePlayer(managed, state);
+      seen.add(state.npub);
+    }
+
+    for (const [npub, managed] of remotePlayers) {
+      if (!seen.has(npub)) {
+        hooks.onHeadPosition?.(npub, null, managed.lastFacing ?? 1);
+        managed.container.destroy({ children: true });
+        remotePlayers.delete(npub);
+      }
+    }
   };
 
   const tickerFn = (ticker: Ticker) => {
@@ -507,11 +608,19 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
 
     const moving = dx !== 0 || dy !== 0;
 
-    if (Math.abs(dx) > 0.001) {
-      lastDirection = dx > 0 ? 1 : -1;
+    if (moving) {
+      const absDx = Math.abs(dx);
+      const absDy = Math.abs(dy);
+
+      if (absDx >= absDy) {
+        lastHorizontalDirection = dx >= 0 ? 1 : -1;
+        lastFacing = dx >= 0 ? 1 : 0;
+      } else {
+        lastFacing = dy >= 0 ? 3 : 2;
+      }
     }
 
-    bodySprite.scale.x = lastDirection;
+    bodySprite.scale.x = lastFacing === 0 ? -1 : lastFacing === 1 ? 1 : lastHorizontalDirection;
 
     if (moving && walkTextures.length > 0) {
       if (!isWalking || !bodySprite.playing) {
@@ -605,7 +714,11 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
       avatarAssetUrl = undefined;
     }
     pressed.clear();
-    hooks.onHeadPosition?.(null);
+    for (const [, managed] of remotePlayers) {
+      managed.container.destroy({ children: true });
+    }
+    remotePlayers.clear();
+    hooks.onHeadPosition?.("local", null, lastFacing);
   };
 
   const setInputCaptured = (captured: boolean) => {
@@ -634,6 +747,7 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     setInputCaptured,
     spawn,
     setAvatar,
+    syncPlayers,
   };
 }
 
