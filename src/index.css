@@ -70,6 +70,14 @@ body {
   text-shadow: 0 0 6px rgba(8, 15, 33, 0.75);
 }
 
+.hud-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 18px;
+  pointer-events: none;
+}
+
 .debug-panel {
   align-self: flex-start;
   background: rgba(6, 12, 24, 0.65);
@@ -158,6 +166,121 @@ body {
 
 .console-panel:not(.is-open) .console-input {
   display: none;
+}
+
+.login-panel {
+  background: rgba(6, 12, 24, 0.65);
+  border: 1px solid rgba(92, 132, 255, 0.35);
+  border-radius: 12px;
+  padding: 12px 14px;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: auto;
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.35);
+}
+
+.login-panel form,
+.login-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.login-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.login-form input {
+  flex: 1;
+  background: rgba(10, 18, 34, 0.85);
+  border: 1px solid rgba(124, 170, 255, 0.35);
+  border-radius: 8px;
+  padding: 6px 8px;
+  color: inherit;
+  font-family: inherit;
+  font-size: 0.95rem;
+}
+
+.login-form button,
+.login-controls .ext-login,
+.login-summary .btn-link {
+  background: rgba(124, 170, 255, 0.2);
+  border: 1px solid rgba(124, 170, 255, 0.45);
+  border-radius: 8px;
+  color: inherit;
+  font-family: inherit;
+  font-size: 0.9rem;
+  padding: 6px 10px;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.login-controls .ext-login {
+  text-align: center;
+}
+
+.login-form button:disabled,
+.login-controls .ext-login:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.login-form button:not(:disabled):hover,
+.login-controls .ext-login:not(:disabled):hover,
+.login-summary .btn-link:hover {
+  background: rgba(124, 170, 255, 0.35);
+}
+
+.login-summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.login-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  object-fit: cover;
+  box-shadow: 0 6px 12px rgba(0, 0, 0, 0.4);
+}
+
+.login-avatar.placeholder {
+  background: rgba(124, 170, 255, 0.25);
+  border: 1px dashed rgba(124, 170, 255, 0.45);
+}
+
+.login-details {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.login-label {
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(212, 224, 255, 0.7);
+}
+
+.login-name {
+  font-size: 0.95rem;
+}
+
+.login-summary .btn-link {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: rgba(212, 224, 255, 0.85);
+}
+
+.login-error {
+  color: #ff8080;
+  font-size: 0.8rem;
 }
 
 .console-prompt {

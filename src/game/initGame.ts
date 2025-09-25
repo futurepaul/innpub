@@ -20,6 +20,7 @@ export type GameInstance = {
   destroy: () => void;
   setInputCaptured: (captured: boolean) => void;
   spawn: () => void;
+  setAvatar: (url?: string | null) => void;
 };
 
 type TileLayer = {
@@ -211,14 +212,30 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     .filter(collision => collision.width > 0 && collision.height > 0)
     .map(collision => new Rectangle(collision.x, collision.y, collision.width, collision.height));
 
-  const player = new Sprite(WHITE_TEXTURE);
+  const playerWidth = map.tileWidth;
+  const playerHeight = map.tileHeight * 2;
+
+  const player = new Container();
   player.eventMode = "none";
-  player.tint = 0x6ee7b7;
-  player.width = map.tileWidth;
-  player.height = map.tileHeight * 2;
-  player.roundPixels = true;
-  const spawnX = Math.round(mapPixelWidth / 2 - player.width * 1.5);
-  const spawnY = Math.round(mapPixelHeight / 2 - player.height);
+  player.label = "player";
+
+  const headSprite = new Sprite(WHITE_TEXTURE);
+  headSprite.width = playerWidth;
+  headSprite.height = map.tileHeight;
+  headSprite.roundPixels = true;
+  headSprite.tint = 0xffffff;
+
+  const bodySprite = new Sprite(WHITE_TEXTURE);
+  bodySprite.width = playerWidth;
+  bodySprite.height = map.tileHeight;
+  bodySprite.y = map.tileHeight;
+  bodySprite.roundPixels = true;
+  bodySprite.tint = 0x6ee7b7;
+
+  player.addChild(headSprite, bodySprite);
+
+  const spawnX = Math.round(mapPixelWidth / 2 - playerWidth * 1.5);
+  const spawnY = Math.round(mapPixelHeight / 2 - playerHeight);
   player.x = spawnX;
   player.y = spawnY;
   scene.addChild(player);
@@ -237,7 +254,7 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
 
   const footBounds = new Rectangle();
   const footHeight = map.tileHeight;
-  const headHeight = player.height - footHeight;
+  const headHeight = playerHeight - footHeight;
 
   const snapPlayerPosition = () => {
     player.x = Math.round(player.x);
@@ -302,8 +319,8 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
   window.addEventListener("keyup", handleKeyUp, { passive: false });
 
   const clampToMap = () => {
-    const maxX = mapPixelWidth - player.width;
-    const maxY = mapPixelHeight - player.height;
+    const maxX = mapPixelWidth - playerWidth;
+    const maxY = mapPixelHeight - playerHeight;
     const minY = -headHeight;
 
     player.x = Math.min(Math.max(player.x, 0), Math.max(0, maxX));
@@ -314,7 +331,7 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
   const updateFootBounds = () => {
     footBounds.x = player.x;
     footBounds.y = player.y + headHeight;
-    footBounds.width = player.width;
+    footBounds.width = playerWidth;
     footBounds.height = footHeight;
   };
 
@@ -378,9 +395,9 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
       }
 
       if (axis === "x") {
-        player.x = delta > 0 ? rect.x - player.width : rect.x + rect.width;
+        player.x = delta > 0 ? rect.x - playerWidth : rect.x + rect.width;
       } else if (delta > 0) {
-        player.y = rect.y - player.height;
+        player.y = rect.y - playerHeight;
       } else {
         player.y = rect.y + rect.height - headHeight;
       }
@@ -436,6 +453,49 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
   updateSceneTransform();
   app.ticker.add(tickerFn);
 
+  let avatarAssetUrl: string | undefined;
+  let avatarRequestId = 0;
+
+  const applyHeadTexture = (texture: Texture) => {
+    headSprite.texture = texture;
+    headSprite.width = playerWidth;
+    headSprite.height = map.tileHeight;
+  };
+
+  const setAvatar = (url?: string | null) => {
+    avatarRequestId += 1;
+    const requestId = avatarRequestId;
+
+    const load = async () => {
+      if (!url) {
+        applyHeadTexture(WHITE_TEXTURE);
+        return;
+      }
+
+      try {
+        if (avatarAssetUrl && avatarAssetUrl !== url) {
+          void Assets.unload(avatarAssetUrl).catch(() => {
+            /* ignore unload failures */
+          });
+        }
+
+        avatarAssetUrl = url;
+        const texture = await Assets.load<Texture>(url);
+        if (requestId !== avatarRequestId) {
+          return;
+        }
+        applyHeadTexture(texture);
+      } catch (error) {
+        console.warn("Failed to load avatar texture", error);
+        if (requestId === avatarRequestId) {
+          applyHeadTexture(WHITE_TEXTURE);
+        }
+      }
+    };
+
+    void load();
+  };
+
   const destroy = () => {
     window.removeEventListener("keydown", handleKeyDown);
     window.removeEventListener("keyup", handleKeyUp);
@@ -449,6 +509,10 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
 
     if (tilesheetTexture) {
       void Assets.unload(map.tileset.imageUrl);
+    }
+    if (avatarAssetUrl) {
+      void Assets.unload(avatarAssetUrl);
+      avatarAssetUrl = undefined;
     }
     pressed.clear();
   };
@@ -464,7 +528,7 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     }
   };
 
-  const resetPlayer = () => {
+  const spawn = () => {
     player.x = spawnX;
     player.y = spawnY;
     clampToMap();
@@ -476,7 +540,8 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
   return {
     destroy,
     setInputCaptured,
-    spawn: resetPlayer,
+    spawn,
+    setAvatar,
   };
 }
 

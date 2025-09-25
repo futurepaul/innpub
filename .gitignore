@@ -35,3 +35,6 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Cursor workspace metadata
 .cursor
+
+# References for vibing
+samples/
