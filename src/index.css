@@ -9,6 +9,7 @@
 :root {
   color-scheme: dark;
   background-color: #050505;
+  --console-line-height: 1.1rem;
 }
 
 * {
@@ -111,20 +112,33 @@ body {
   box-shadow: 0 18px 32px rgba(0, 0, 0, 0.6);
 }
 
+.console-panel:not(.is-open) {
+  padding: 8px 14px;
+  border-color: rgba(92, 132, 255, 0.2);
+  max-height: calc(var(--console-line-height) * 2.2);
+}
+
 .console-log {
   font-size: 0.95rem;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
   gap: 4px;
-  min-height: 80px;
-  max-height: 160px;
+  min-height: calc(var(--console-line-height) * 1.5);
+  max-height: calc(var(--console-line-height) * 5 + 12px);
   overflow-y: auto;
   padding-right: 4px;
+  line-height: var(--console-line-height);
 }
 
 .console-line {
   white-space: pre-wrap;
+}
+
+.console-panel:not(.is-open) .console-log {
+  max-height: calc(var(--console-line-height) + 6px);
+  overflow: hidden;
+  padding-right: 0;
 }
 
 .console-input {
@@ -140,6 +154,10 @@ body {
 
 .console-panel.is-open .console-input {
   border-color: rgba(124, 170, 255, 0.45);
+}
+
+.console-panel:not(.is-open) .console-input {
+  display: none;
 }
 
 .console-prompt {

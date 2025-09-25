@@ -9,6 +9,7 @@ export function App() {
   const containerRef = useRef<HTMLDivElement>(null);
   const consoleInputRef = useRef<HTMLInputElement>(null);
   const gameInstanceRef = useRef<GameInstance | null>(null);
+  const consoleLogRef = useRef<HTMLDivElement>(null);
 
   const [playerPosition, setPlayerPosition] = useState({ x: 0, y: 0 });
   const [logMessages, setLogMessages] = useState<string[]>([]);
@@ -129,6 +130,17 @@ export function App() {
   }, [consoleOpen, consoleInput.length]);
 
   useEffect(() => {
+    if (!consoleOpen) {
+      return;
+    }
+
+    const element = consoleLogRef.current;
+    if (element) {
+      element.scrollTop = element.scrollHeight;
+    }
+  }, [consoleOpen, logMessages.length]);
+
+  useEffect(() => {
     const handleOpenConsole = (event: globalThis.KeyboardEvent) => {
       if (consoleOpen) {
         return;
@@ -173,7 +185,8 @@ export function App() {
     }
   }, []);
 
-  const visibleLogs = logMessages.slice(-8);
+  const lines = consoleOpen ? logMessages : logMessages.slice(-1);
+  const visibleLogs = lines.length > 0 ? lines : [consoleOpen ? "Console ready" : "Press / to open console"];
 
   return (
     <div className="viewport" ref={containerRef}>
@@ -185,27 +198,28 @@ export function App() {
         </div>
 
         <div className={`console-panel${consoleOpen ? " is-open" : ""}`}>
-          <div className="console-log">
+          <div className="console-log" ref={consoleLogRef}>
             {visibleLogs.map((line, index) => (
               <div key={`${index}-${line}`} className="console-line">
                 {line}
               </div>
             ))}
           </div>
-          <form className="console-input" onSubmit={handleConsoleSubmit}>
-            <span className="console-prompt">&gt;</span>
-            <input
-              ref={consoleInputRef}
-              value={consoleInput}
-              onChange={event => setConsoleInput(event.target.value)}
-              onKeyDown={handleConsoleInputKeyDown}
-              spellCheck={false}
-              autoComplete="off"
-              autoCorrect="off"
-              disabled={!consoleOpen}
-              aria-label="Console input"
-            />
-          </form>
+          {consoleOpen && (
+            <form className="console-input" onSubmit={handleConsoleSubmit}>
+              <span className="console-prompt">&gt;</span>
+              <input
+                ref={consoleInputRef}
+                value={consoleInput}
+                onChange={event => setConsoleInput(event.target.value)}
+                onKeyDown={handleConsoleInputKeyDown}
+                spellCheck={false}
+                autoComplete="off"
+                autoCorrect="off"
+                aria-label="Console input"
+              />
+            </form>
+          )}
         </div>
       </div>
     </div>
