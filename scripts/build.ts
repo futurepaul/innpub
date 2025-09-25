@@ -23,6 +23,7 @@ async function run() {
 
   await mkdir("dist", { recursive: true });
   await cp("map", "dist/map", { recursive: true });
+  await cp("assets", "dist/assets", { recursive: true });
 }
 
 run().catch(error => {
