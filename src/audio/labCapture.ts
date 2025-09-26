@@ -31,6 +31,7 @@ declare global {
 
 const SAMPLE_RATE = 48_000;
 const TONE_FRAME_COUNT = 960; // ~20ms at 48kHz
+const TARGET_FRAME_COUNT = 960;
 
 export class AudioLabCapture {
   #callbacks: CaptureCallbacks;
@@ -41,6 +42,8 @@ export class AudioLabCapture {
   #toneTimer: number | null = null;
   #tonePhase = 0;
   #active = false;
+  #pendingChannels: Float32Array[] = [];
+  #pendingLength = 0;
 
   constructor(callbacks: CaptureCallbacks) {
     this.#callbacks = callbacks;
@@ -78,6 +81,8 @@ export class AudioLabCapture {
       this.#stream = undefined;
     }
     this.#reader = undefined;
+    this.#pendingChannels = [];
+    this.#pendingLength = 0;
   }
 
   updateTone(config: Partial<ToneConfig>) {
@@ -119,6 +124,8 @@ export class AudioLabCapture {
     const reader = processor.readable.getReader();
     this.#reader = reader;
     this.#stream = stream;
+    this.#pendingChannels = [];
+    this.#pendingLength = 0;
 
     const pump = async () => {
       for (;;) {
@@ -156,9 +163,50 @@ export class AudioLabCapture {
       channels.push(buffer);
     }
 
-    const rms = this.#computeRms(channels[0]);
-    this.#callbacks.onLevel(rms);
-    this.#callbacks.onSamples(channels, frame.sampleRate || SAMPLE_RATE);
+    this.#appendAndEmitMicFrames(channels, frame.sampleRate || SAMPLE_RATE);
+  }
+
+  #appendAndEmitMicFrames(channels: Float32Array[], sampleRate: number) {
+    if (this.#pendingChannels.length !== channels.length) {
+      this.#pendingChannels = Array.from({ length: channels.length }, () => new Float32Array(0));
+      this.#pendingLength = 0;
+    }
+
+    for (let channel = 0; channel < channels.length; channel += 1) {
+      const existing = this.#pendingChannels[channel];
+      const incoming = channels[channel];
+      const combined = new Float32Array(existing.length + incoming.length);
+      combined.set(existing, 0);
+      combined.set(incoming, existing.length);
+      this.#pendingChannels[channel] = combined;
+    }
+    this.#pendingLength += channels[0]?.length ?? 0;
+
+    while (this.#pendingLength >= TARGET_FRAME_COUNT) {
+      const slice: Float32Array[] = new Array(this.#pendingChannels.length);
+      for (let channel = 0; channel < this.#pendingChannels.length; channel += 1) {
+        const source = this.#pendingChannels[channel];
+        slice[channel] = source.subarray(0, TARGET_FRAME_COUNT); // view
+      }
+
+      const copyForEmit = slice.map(channelSlice => new Float32Array(channelSlice));
+      const rms = this.#computeRms(copyForEmit[0]);
+      this.#callbacks.onLevel(rms);
+      this.#callbacks.onSamples(copyForEmit, sampleRate);
+
+      const remaining = this.#pendingLength - TARGET_FRAME_COUNT;
+      for (let channel = 0; channel < this.#pendingChannels.length; channel += 1) {
+        const source = this.#pendingChannels[channel];
+        if (remaining > 0) {
+          const remainder = new Float32Array(remaining);
+          remainder.set(source.subarray(TARGET_FRAME_COUNT));
+          this.#pendingChannels[channel] = remainder;
+        } else {
+          this.#pendingChannels[channel] = new Float32Array(0);
+        }
+      }
+      this.#pendingLength = remaining;
+    }
   }
 
   #startTone() {
