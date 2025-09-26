@@ -454,10 +454,10 @@ function updateAudioMix(): void {
 
 function isRemoteAudible(localRooms: readonly string[], remoteRooms: readonly string[] | undefined): boolean {
   if (localRooms.length === 0) {
-    return true;
+    return false;
   }
   if (!remoteRooms || remoteRooms.length === 0) {
-    return true;
+    return false;
   }
   return localRooms.some(room => remoteRooms.includes(room));
 }
