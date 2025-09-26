@@ -30,6 +30,11 @@ import {
   type ChatMessage,
 } from "./multiplayer/stream";
 
+interface AudioDebugMetrics {
+  leadMs: number;
+  underruns: number;
+}
+
 export function App() {
   const containerRef = useRef<HTMLDivElement>(null);
   const consoleInputRef = useRef<HTMLInputElement>(null);
@@ -58,6 +63,7 @@ export function App() {
   const [toneEnabled, setToneEnabled] = useState(false);
   const [toneFrequency, setToneFrequency] = useState(440);
   const [toneAmplitude, setToneAmplitude] = useState(0.05);
+  const [audioDebugMetrics, setAudioDebugMetrics] = useState<AudioDebugMetrics>({ leadMs: 0, underruns: 0 });
 
   const consoleOpen = inputMode !== null;
   const profileMapRef = useRef<Map<string, PlayerProfile>>(new Map());
@@ -120,6 +126,58 @@ export function App() {
   useEffect(() => {
     profileMapRef.current = profileMap;
   }, [profileMap]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    let mounted = true;
+    const updateAudioDebug = () => {
+      const snapshot = window.__innpubAudioDebug?.();
+      if (!snapshot) {
+        if (!mounted) {
+          return;
+        }
+        setAudioDebugMetrics(prev => {
+          if (prev.leadMs === 0 && prev.underruns === 0) {
+            return prev;
+          }
+          return { leadMs: 0, underruns: 0 };
+        });
+        return;
+      }
+      let maxLead = 0;
+      let totalUnderruns = 0;
+      for (const stats of Object.values(snapshot.playback.remotes)) {
+        if (!stats) {
+          continue;
+        }
+        if (stats.bufferedAhead > maxLead) {
+          maxLead = stats.bufferedAhead;
+        }
+        totalUnderruns += stats.underruns;
+      }
+      if (!mounted) {
+        return;
+      }
+      setAudioDebugMetrics(prev => {
+        const leadMs = Math.round(maxLead * 1000);
+        if (prev.leadMs === leadMs && prev.underruns === totalUnderruns) {
+          return prev;
+        }
+        return {
+          leadMs,
+          underruns: totalUnderruns,
+        };
+      });
+    };
+    updateAudioDebug();
+    const timer = window.setInterval(updateAudioDebug, 500);
+    return () => {
+      mounted = false;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   useEffect(() => {
     startStream();
@@ -570,6 +628,8 @@ export function App() {
             <div className="debug-title">Debug</div>
             <div className="debug-row">x: {Math.round(playerPosition.x)}</div>
             <div className="debug-row">y: {Math.round(playerPosition.y)}</div>
+            <div className="debug-row">lead: {audioDebugMetrics.leadMs} ms</div>
+            <div className="debug-row">underruns: {audioDebugMetrics.underruns}</div>
           </div>
 
           {pubkey ? (

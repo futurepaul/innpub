@@ -1,6 +1,7 @@
 import type { DecodedPacket } from "./packets";
 
-const LEAD_SECONDS = 0.65;
+const LEAD_SECONDS = 0.15;
+const MAX_LEAD_MULTIPLIER = 2;
 
 export interface PlaybackStats {
   framesDecoded: number;
@@ -70,12 +71,18 @@ export class AudioPlayback {
       remote.gain.gain.value = targetGain;
     }
 
-    if (remote.nextTime < context.currentTime) {
+    const currentTime = context.currentTime;
+
+    if (remote.nextTime < currentTime) {
       remote.stats.underruns += 1;
-      remote.nextTime = context.currentTime;
+      remote.nextTime = currentTime;
     }
 
-    const startAt = Math.max(remote.nextTime, context.currentTime + LEAD_SECONDS);
+    if (remote.nextTime - currentTime > LEAD_SECONDS * MAX_LEAD_MULTIPLIER) {
+      remote.nextTime = currentTime + LEAD_SECONDS;
+    }
+
+    const startAt = Math.max(remote.nextTime, currentTime + LEAD_SECONDS);
 
     const source = context.createBufferSource();
     source.buffer = buffer;
