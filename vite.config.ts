@@ -24,4 +24,10 @@ export default defineConfig({
   preview: {
     headers: CROSS_ORIGIN_HEADERS,
   },
+  optimizeDeps: {
+    exclude: ["@ain1084/audio-worklet-stream"],
+  },
+  ssr: {
+    noExternal: ["@ain1084/audio-worklet-stream"],
+  },
 });

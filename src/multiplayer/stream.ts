@@ -1574,7 +1574,7 @@ async function startMicrophoneCapture(): Promise<void> {
     onSamples: handleCapturedSamples,
     onLevel: handleCapturedLevel,
   });
-  capture.setSyntheticTone({
+  await capture.setSyntheticTone({
     enabled: syntheticToneEnabled,
     frequency: syntheticToneFrequency,
     amplitude: syntheticToneAmplitude,
@@ -1818,7 +1818,7 @@ export function getProfilePictureUrl(npub: string): string | undefined {
   return profile ? getProfilePicture(profile) ?? undefined : undefined;
 }
 
-export function setSyntheticTone(config: { enabled?: boolean; frequency?: number; amplitude?: number }): void {
+export async function setSyntheticTone(config: { enabled?: boolean; frequency?: number; amplitude?: number }): Promise<void> {
   if (typeof config.enabled === "boolean") {
     syntheticToneEnabled = config.enabled;
   }
@@ -1830,7 +1830,7 @@ export function setSyntheticTone(config: { enabled?: boolean; frequency?: number
   }
 
   if (audioCapture) {
-    audioCapture.setSyntheticTone({
+    await audioCapture.setSyntheticTone({
       enabled: syntheticToneEnabled,
       frequency: syntheticToneFrequency,
       amplitude: syntheticToneAmplitude,

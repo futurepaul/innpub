@@ -456,7 +456,7 @@ export function App() {
     setPlayerRooms([]);
     void setMicrophoneEnabled(false);
     setToneEnabled(false);
-    setSyntheticToneSource({ enabled: false });
+    void setSyntheticToneSource({ enabled: false });
   }, [appendLog]);
 
   const handleConsoleInputKeyDown = useCallback((event: ReactKeyboardEvent<HTMLInputElement>) => {
@@ -512,7 +512,7 @@ export function App() {
   }, [avatarUrl]);
 
   useEffect(() => {
-    setSyntheticToneSource({
+    void setSyntheticToneSource({
       enabled: toneEnabled,
       frequency: toneFrequency,
       amplitude: toneAmplitude,
@@ -618,7 +618,7 @@ export function App() {
                   onClick={() => {
                     setToneEnabled(prev => {
                       const next = !prev;
-                      setSyntheticToneSource({
+                      void setSyntheticToneSource({
                         enabled: next,
                         frequency: toneFrequency,
                         amplitude: toneAmplitude,
@@ -644,6 +644,11 @@ export function App() {
                       if (Number.isFinite(value)) {
                         const clamped = Math.min(4000, Math.max(50, value));
                         setToneFrequency(clamped);
+                        void setSyntheticToneSource({
+                          enabled: toneEnabled,
+                          frequency: clamped,
+                          amplitude: toneAmplitude,
+                        });
                       }
                     }}
                   />
@@ -661,6 +666,11 @@ export function App() {
                       if (Number.isFinite(value)) {
                         const clamped = Math.min(1, Math.max(0, value));
                         setToneAmplitude(clamped);
+                        void setSyntheticToneSource({
+                          enabled: toneEnabled,
+                          frequency: toneFrequency,
+                          amplitude: clamped,
+                        });
                       }
                     }}
                   />
