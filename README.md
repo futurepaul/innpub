@@ -9,13 +9,19 @@ bun install
 To start a development server:
 
 ```bash
-bun dev
+bunx vite
 ```
 
-To run for production:
+To build for production:
 
 ```bash
-bun start
+bunx vite build
+```
+
+To preview the production build locally:
+
+```bash
+bunx vite preview
 ```
 
 This project was created using `bun init` in bun v1.2.23. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.

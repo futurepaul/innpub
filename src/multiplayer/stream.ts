@@ -127,6 +127,9 @@ const CHAT_TTL_MS = 7000;
 const MAX_CHAT_LENGTH = 240;
 const RESUBSCRIBE_BASE_DELAY_MS = 200;
 const RESUBSCRIBE_MAX_DELAY_MS = 8000;
+const RESUBSCRIBE_JITTER_RATIO = 0.35;
+const MAX_RESUBSCRIBE_ATTEMPTS = 10;
+const MAX_RESET_LOGS = 5;
 const AUDIO_DEBUG_THROTTLE_MS = 200;
 
 type AudioDebugCapture = {
@@ -135,6 +138,8 @@ type AudioDebugCapture = {
   lastLevel: number;
   subscribers: number;
   lastFrameAt: number;
+  lastFrameCount: number;
+  lastFrameDurationMs: number;
 };
 
 type AudioDebugPlayback = {
@@ -159,6 +164,12 @@ type AudioDebugSnapshot = {
   micEnabled: boolean;
   speakerEnabled: boolean;
   audioEnabled: boolean;
+  tone: {
+    enabled: boolean;
+    frequency: number;
+    amplitude: number;
+  };
+  resets: Record<string, number>;
   timestamp: number;
 };
 
@@ -188,6 +199,8 @@ const audioDebugCapture: AudioDebugCapture = {
   lastLevel: 0,
   subscribers: 0,
   lastFrameAt: 0,
+  lastFrameCount: 0,
+  lastFrameDurationMs: 0,
 };
 
 const audioDebugPlayback: AudioDebugPlayback = {
@@ -238,6 +251,12 @@ function publishAudioDebug(force = false) {
     micEnabled,
     speakerEnabled,
     audioEnabled: audioPlayback.isEnabled(),
+    tone: {
+      enabled: syntheticToneEnabled,
+      frequency: syntheticToneFrequency,
+      amplitude: syntheticToneAmplitude,
+    },
+    resets: getResetSnapshot(),
     timestamp: nowTs,
   };
   window.__innpubAudioDebug = () => snapshot;
@@ -263,12 +282,20 @@ function logTrackSubscribeFailure(path: Moq.Path.Valid, track: string, error: un
     const key = `${path}:${track}`;
     const count = (resetErrorCounts.get(key) ?? 0) + 1;
     resetErrorCounts.set(key, count);
-    if (count === 1 || count % 5 === 0) {
+    if (count <= MAX_RESET_LOGS || count % 5 === 0) {
       console.debug(`${track} reset for ${path} (attempt ${count})`);
     }
   } else {
     console.warn(`failed to subscribe to ${track} for ${path}`, error);
   }
+}
+
+function getResetSnapshot(): Record<string, number> {
+  const snapshot: Record<string, number> = {};
+  resetErrorCounts.forEach((value, key) => {
+    snapshot[key] = value;
+  });
+  return snapshot;
 }
 
 function ensureBeforeUnloadHook() {
@@ -297,6 +324,8 @@ function handleCapturedSamples(channels: Float32Array[], sampleRate: number) {
   audioDebugCapture.lastSampleRate = sampleRate;
   audioDebugCapture.subscribers = audioSubscribers.size;
   audioDebugCapture.lastFrameAt = Date.now();
+  audioDebugCapture.lastFrameCount = frameCount;
+  audioDebugCapture.lastFrameDurationMs = sampleRate > 0 ? (frameCount / sampleRate) * 1000 : 0;
   publishAudioDebug();
 
   if (audioSubscribers.size === 0) {
@@ -722,6 +751,7 @@ function clearResubscribe(path: string): void {
     resubscribeTimers.delete(path);
   }
   resubscribeAttempts.delete(path);
+  clearResetErrorCounts(path);
 }
 
 function scheduleResubscribe(path: string): void {
@@ -737,8 +767,19 @@ function scheduleResubscribe(path: string): void {
   }
 
   const attempts = (resubscribeAttempts.get(path) ?? 0) + 1;
+  if (attempts > MAX_RESUBSCRIBE_ATTEMPTS) {
+    if (!resetErrorCounts.has(`${path}:drop`)) {
+      resetErrorCounts.set(`${path}:drop`, attempts);
+      console.warn(`giving up on resubscribing to ${path} after ${MAX_RESUBSCRIBE_ATTEMPTS} attempts`);
+    }
+    return;
+  }
   resubscribeAttempts.set(path, attempts);
-  const delay = Math.min(RESUBSCRIBE_BASE_DELAY_MS * 2 ** (attempts - 1), RESUBSCRIBE_MAX_DELAY_MS);
+
+  const exponentialDelay = Math.min(RESUBSCRIBE_BASE_DELAY_MS * 2 ** (attempts - 1), RESUBSCRIBE_MAX_DELAY_MS);
+  const jitter = exponentialDelay * RESUBSCRIBE_JITTER_RATIO;
+  const randomOffset = jitter * (Math.random() * 2 - 1);
+  const delay = Math.max(RESUBSCRIBE_BASE_DELAY_MS, Math.min(RESUBSCRIBE_MAX_DELAY_MS, exponentialDelay + randomOffset));
 
   const scheduler = typeof window !== "undefined" && window.setTimeout ? window.setTimeout.bind(window) : setTimeout;
   const timer = scheduler(() => {
@@ -768,7 +809,7 @@ function logSubscriptionRetry(path: string, error: unknown) {
     const key = `${path}:retry`;
     const count = (resetErrorCounts.get(key) ?? 0) + 1;
     resetErrorCounts.set(key, count);
-    if (count === 1 || count % 5 === 0) {
+    if (count <= MAX_RESET_LOGS || count % 5 === 0) {
       console.debug(`resubscribe reset for ${path} (attempt ${count})`);
     }
     return;
@@ -1129,6 +1170,7 @@ function subscribeToRemote(path: Moq.Path.Valid) {
     lastSeen: now(),
   };
   clearResubscribe(path);
+  clearResetErrorCounts(path);
   remoteSubscriptions.set(path, subscription);
 
   stateTrack.closed
@@ -1189,7 +1231,7 @@ function subscribeToRemote(path: Moq.Path.Valid) {
   });
 
   try {
-    const audioTrack = broadcast.subscribe(AUDIO_TRACK, 0);
+    const audioTrack = broadcast.subscribe(AUDIO_TRACK, -1);
     clearResetErrorCounts(`${path}:${AUDIO_TRACK}`);
     subscription.audioTrack = audioTrack;
     audioTrack.closed

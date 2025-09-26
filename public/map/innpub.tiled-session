@@ -1,0 +1,49 @@
+{
+    "Map/SizeTest": {
+        "height": 4300,
+        "width": 2
+    },
+    "activeFile": "inside.tsx",
+    "expandedProjectPaths": [
+        "."
+    ],
+    "file.lastUsedOpenFilter": "All Files (*)",
+    "fileStates": {
+        "innpub-interior.tmx": {
+            "scale": 1.2053,
+            "selectedLayer": 2,
+            "viewCenter": {
+                "x": 232.30730938355595,
+                "y": 149.34041317514314
+            }
+        },
+        "inside-tileset.tsx": {
+            "scaleInDock": 1,
+            "scaleInEditor": 1
+        },
+        "inside.tsx": {
+            "scaleInDock": 1.012,
+            "scaleInEditor": 1
+        }
+    },
+    "last.imagePath": "/Users/futurepaul/Downloads/TimeFantasy_TILES_6/TILESETS",
+    "map.lastUsedFormat": "tmx",
+    "map.renderOrder": "2",
+    "map.tileHeight": 16,
+    "map.tileWidth": 16,
+    "openFiles": [
+        "innpub-interior.tmx",
+        "inside.tsx"
+    ],
+    "project": "innpub.tiled-project",
+    "recentFiles": [
+        "innpub-interior.tmx",
+        "inside.tsx",
+        "inside-tileset.tsx"
+    ],
+    "tileset.lastUsedFormat": "tsx",
+    "tileset.tileSize": {
+        "height": 16,
+        "width": 16
+    }
+}

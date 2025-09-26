@@ -25,6 +25,7 @@
     "paths": {
       "@/*": ["./src/*"]
     },
+    "types": ["vite/client"],
 
     // Some stricter flags (disabled by default)
     "noUnusedLocals": false,

@@ -4,11 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun --hot src/index.tsx",
-    "build": "bun scripts/build.ts",
-    "start": "NODE_ENV=production bun src/index.tsx"
+    "predev": "bun scripts/prepare-worklets.ts",
+    "dev": "bunx vite",
+    "prebuild": "bun scripts/prepare-worklets.ts",
+    "build": "bunx vite build",
+    "preview": "bunx vite preview"
   },
   "dependencies": {
+    "@ain1084/audio-worklet-stream": "^2.0.1",
     "@kixelated/moq": "^0.9.1",
     "applesauce-core": "^3.1.0",
     "applesauce-loaders": "^3.1.0",
@@ -19,11 +22,14 @@
     "pixi.js": "^8.13.2",
     "react": "^19",
     "react-dom": "^19",
+    "wouter": "^3.7.1",
     "zod": "^4.1.11"
   },
   "devDependencies": {
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@vitejs/plugin-react": "^5.0.3",
+    "vite": "^5.4.10"
   }
 }

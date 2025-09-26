@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
+import { Link } from "wouter";
+
 import "./index.css";
 import { initGame, type GameInstance } from "./game/initGame";
 import { Application } from "pixi.js";
@@ -570,6 +572,9 @@ export function App() {
             <div className="debug-title">Debug</div>
             <div className="debug-row">x: {Math.round(playerPosition.x)}</div>
             <div className="debug-row">y: {Math.round(playerPosition.y)}</div>
+            <Link href="/audio-lab" className="debug-link">
+              Open Audio Lab ↗
+            </Link>
           </div>
 
           {pubkey ? (

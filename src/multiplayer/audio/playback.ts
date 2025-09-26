@@ -70,6 +70,10 @@ export class AudioPlayback {
       remote.nextTime = context.currentTime;
     }
 
+    if (remote.nextTime - context.currentTime > LEAD_SECONDS * 4) {
+      remote.nextTime = context.currentTime + LEAD_SECONDS;
+    }
+
     const startAt = Math.max(remote.nextTime, context.currentTime + LEAD_SECONDS);
 
     const source = context.createBufferSource();

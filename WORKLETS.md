@@ -1,33 +1,31 @@
 # Audio Worklet Flow
 
-This app ships a custom audio worklet (`capture-worklet.js`) that lives at
-`src/multiplayer/audio/worklets/capture-worklet.js`. Bun does not automatically
-serve files that sit outside the bundler graph, so we handle both build‑time and
-runtime plumbing ourselves.
+This app ships two audio worklet scripts that live outside the React bundle:
+
+- `public/worklets/capture-worklet.js`
+- `public/worklets/audio-worklet-stream-output.js` (bundled from
+  `@ain1084/audio-worklet-stream/dist/output-stream-processor.js` so the module
+  ships with no bare imports)
+
+Vite serves anything in `public/` as static assets, which keeps the worklets
+available in both the dev server and production build.
 
 ## Build step
 
-`scripts/build.ts` runs `bun build` for the React bundle and then copies
-additional static assets into `dist/`:
-
-- `dist/map/**`
-- `dist/assets/**`
-- `dist/DotGothic16-Regular.ttf`
-- `dist/worklets/capture-worklet.js`
-
-Copying the worklet into `dist/worklets/` makes it available when we host the
-prebuilt app with `bun start` (which simply executes `src/index.tsx`).
+Before launching either `vite dev` or `vite build` we run
+`scripts/prepare-worklets.ts`. It copies the local capture worklet into
+`public/worklets/capture-worklet.js` and bundles
+`node_modules/@ain1084/audio-worklet-stream/dist/output-stream-processor.js`
+into `public/worklets/audio-worklet-stream-output.js` via `Bun.build`, removing
+the bare module specifiers that would otherwise break in the browser. Everything
+else in `public/` is committed directly.
 
 ## Runtime routing
 
-The Bun server in `src/index.tsx` serves a handful of static routes. After the
-change we just made, `/worklets/*` now resolves to either:
-
-1. `dist/worklets/<file>` (production / `bun run build` + `bun start`)
-2. `src/multiplayer/audio/worklets/<file>` (development / `bun --hot src/index.tsx`)
-
-This ensures hot reload works while we develop, but the built assets continue to
-load for production.
+Vite's dev server automatically serves files in `public/`, and the production
+build emits them into `dist/`. We add COOP/COEP (`Cross-Origin-Embedder-Policy:
+credentialless`) headers in `vite.config.ts` so the browser stays cross-origin
+isolated while still allowing remote assets like Nostr avatars.
 
 ## Client consumption
 
@@ -38,9 +36,9 @@ that fetch succeeds in both dev and prod.
 
 ## Commands
 
-- Development: `bun --hot src/index.tsx`
-- Production build: `bun run build`
-- Serve production build: `bun start`
+- Development: `bunx vite`
+- Production build: `bunx vite build`
+- Preview production build locally: `bunx vite preview`
 
-Keep those three pieces (copy, route, URL) in sync whenever you add more worklet
-files.
+Keep the prepare script, public directory, and worklet URLs in sync whenever you
+add more worklet files.
