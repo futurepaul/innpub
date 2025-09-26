@@ -1,5 +1,9 @@
+import { StreamNodeFactory, UnderrunEvent, type OutputStreamNode } from "@ain1084/audio-worklet-stream";
+import type { FrameBufferWriter } from "@ain1084/audio-frame-buffer";
+
 import type { DecodedPacket } from "./packets";
 
+const LEAD_BUFFER_FRAMES = 48_000; // 1s @ 48kHz
 const LEAD_SECONDS = 0.65;
 
 export interface PlaybackStats {
@@ -8,11 +12,16 @@ export interface PlaybackStats {
   underruns: number;
 }
 
-interface RemoteState {
+type RemoteState = {
+  node: OutputStreamNode;
+  writer: FrameBufferWriter;
   gain: GainNode;
-  nextTime: number;
   stats: PlaybackStats;
-}
+  sampleRate: number;
+  channelCount: number;
+  started: boolean;
+  droppedFrames: number;
+};
 
 declare global {
   interface Window {
@@ -26,64 +35,76 @@ declare global {
 
 export class AudioPlayback {
   #context?: AudioContext;
+  #factoryPromise?: Promise<StreamNodeFactory>;
+  #factory?: StreamNodeFactory;
   #masterGain?: GainNode;
-  #remotes = new Map<string, RemoteState>();
   #enabled = true;
+  #remotes = new Map<string, RemoteState>();
+  #pendingRemotes = new Map<string, Promise<RemoteState>>();
   #volumes = new Map<string, number>();
+  #processorLoaded = false;
 
   async resume(): Promise<void> {
-    const context = await this.#ensureContext();
-    if (context.state === "suspended") {
-      await context.resume();
+    await this.#ensureContext();
+    if (this.#context?.state === "suspended") {
+      await this.#context.resume();
     }
   }
 
   setEnabled(enabled: boolean) {
     this.#enabled = enabled;
-    const gain = this.#masterGain;
-    if (gain) {
-      gain.gain.value = enabled ? 1 : 0;
+    if (this.#masterGain) {
+      this.#masterGain.gain.value = enabled ? 1 : 0;
     }
   }
 
-  enqueue(path: string, packet: DecodedPacket) {
-    const context = this.#context;
-    const masterGain = this.#masterGain;
-    if (!context || !masterGain) return;
-
-    const { channels, sampleRate, frameCount } = packet;
-    if (channels.length === 0 || frameCount === 0) return;
-
-    const buffer = context.createBuffer(channels.length, frameCount, sampleRate);
-    for (let channel = 0; channel < channels.length; channel += 1) {
-      buffer.copyToChannel(channels[channel], channel);
+  async enqueue(path: string, packet: DecodedPacket): Promise<void> {
+    if (packet.frameCount === 0 || packet.channels.length === 0) {
+      return;
+    }
+    const remote = await this.#getRemote(path, packet);
+    if (remote.channelCount !== packet.channels.length) {
+      await this.#recreateRemote(path, packet);
+      return this.enqueue(path, packet);
     }
 
-    const remote = this.#remotes.get(path) ?? this.#createRemote(path);
-    const targetGain = this.#volumes.get(path);
-    if (typeof targetGain === "number") {
-      remote.gain.gain.value = targetGain;
+    const totalFrames = packet.frameCount;
+    const channels = packet.channels;
+    const written = remote.writer.write((segment, offset) => {
+      const remaining = totalFrames - offset;
+      if (remaining <= 0) {
+        return 0;
+      }
+      const framesToCopy = Math.min(segment.frameCount, remaining);
+      for (let frame = 0; frame < framesToCopy; frame += 1) {
+        for (let channel = 0; channel < channels.length; channel += 1) {
+          segment.set(frame, channel, channels[channel][offset + frame]);
+        }
+      }
+      return framesToCopy;
+    });
+
+    if (written < totalFrames) {
+      const dropped = totalFrames - written;
+      remote.droppedFrames += dropped;
+      console.warn(`AudioPlayback dropping ${dropped} frames for ${path}`);
     }
 
-    if (remote.nextTime < context.currentTime) {
-      remote.stats.underruns += 1;
-      remote.nextTime = context.currentTime;
+    remote.sampleRate = packet.sampleRate;
+
+    const totalWritten = Number(remote.writer.totalFrames);
+    const totalRead = Number(remote.node.totalReadFrames);
+    const bufferFrames = Math.max(0, totalWritten - totalRead);
+
+    remote.stats.bufferedAhead = bufferFrames / remote.sampleRate;
+    remote.stats.framesDecoded = totalRead;
+
+    if (!remote.started && written > 0) {
+      if (!remote.node.isStart) {
+        remote.node.start();
+      }
+      remote.started = true;
     }
-
-    if (remote.nextTime - context.currentTime > LEAD_SECONDS * 4) {
-      remote.nextTime = context.currentTime + LEAD_SECONDS;
-    }
-
-    const startAt = Math.max(remote.nextTime, context.currentTime + LEAD_SECONDS);
-
-    const source = context.createBufferSource();
-    source.buffer = buffer;
-    source.connect(remote.gain);
-    source.start(startAt);
-
-    remote.nextTime = startAt + buffer.duration;
-    remote.stats.framesDecoded += frameCount;
-    remote.stats.bufferedAhead = Math.max(0, remote.nextTime - context.currentTime);
   }
 
   setVolume(path: string, value: number) {
@@ -96,20 +117,26 @@ export class AudioPlayback {
 
   close(path: string) {
     const remote = this.#remotes.get(path);
-    if (!remote) return;
-    remote.gain.disconnect();
+    if (!remote) {
+      return;
+    }
     this.#remotes.delete(path);
     this.#volumes.delete(path);
+    remote.gain.disconnect();
+    void remote.node.stop();
   }
 
   shutdown() {
-    for (const key of [...this.#remotes.keys()]) {
-      this.close(key);
+    for (const [path] of this.#remotes) {
+      this.close(path);
     }
     void this.#context?.close();
     this.#context = undefined;
+    this.#factoryPromise = undefined;
+    this.#factory = undefined;
     this.#masterGain = undefined;
-    this.#volumes.clear();
+    this.#processorLoaded = false;
+    this.#exposeDebugHandle();
   }
 
   getVolume(path: string): number | undefined {
@@ -149,46 +176,103 @@ export class AudioPlayback {
     return this.#enabled;
   }
 
-  async #ensureContext(): Promise<AudioContext> {
-    if (this.#context) {
-      return this.#context;
+  async #ensureContext(): Promise<void> {
+    if (this.#factoryPromise) {
+      await this.#factoryPromise;
+      return;
     }
-    const context = new AudioContext({ sampleRate: 48000 });
-    const masterGain = context.createGain();
-    masterGain.gain.value = this.#enabled ? 1 : 0;
-    masterGain.connect(context.destination);
-    this.#context = context;
-    this.#masterGain = masterGain;
-    this.#exposeDebugHandle();
-    return context;
+    const promise = (async () => {
+      const context = new AudioContext({ sampleRate: 48_000 });
+      const masterGain = context.createGain();
+      masterGain.gain.value = this.#enabled ? 1 : 0;
+      masterGain.connect(context.destination);
+      this.#context = context;
+      this.#masterGain = masterGain;
+      const factory = await StreamNodeFactory.create(context);
+      this.#factory = factory;
+      this.#exposeDebugHandle();
+      return factory;
+    })();
+    this.#factoryPromise = promise;
+    await promise;
   }
 
-  #createRemote(path: string): RemoteState {
-    if (!this.#context || !this.#masterGain) {
-      throw new Error("audio context not initialized");
+  async #ensureProcessorModule(): Promise<void> {
+    if (!this.#context) {
+      throw new Error("Audio context not initialized");
     }
+    if (this.#processorLoaded) {
+      return;
+    }
+    await this.#context.audioWorklet.addModule("/worklets/audio-worklet-stream-output.js");
+    this.#processorLoaded = true;
+  }
+
+  async #getRemote(path: string, packet: DecodedPacket): Promise<RemoteState> {
+    const existing = this.#remotes.get(path);
+    if (existing) {
+      return existing;
+    }
+    const pending = this.#pendingRemotes.get(path);
+    if (pending) {
+      return pending;
+    }
+    const creation = this.#createRemote(path, packet);
+    this.#pendingRemotes.set(path, creation);
+    const remote = await creation;
+    this.#pendingRemotes.delete(path);
+    this.#remotes.set(path, remote);
+    return remote;
+  }
+
+  async #recreateRemote(path: string, packet: DecodedPacket): Promise<void> {
+    this.close(path);
+    this.#remotes.delete(path);
+    await this.#getRemote(path, packet);
+  }
+
+  async #createRemote(path: string, packet: DecodedPacket): Promise<RemoteState> {
+    await this.#ensureContext();
+    await this.#ensureProcessorModule();
+    if (!this.#context || !this.#masterGain || !this.#factory) {
+      throw new Error("Audio context not initialized");
+    }
+    const channelCount = Math.max(1, packet.channels.length);
+    const frameCount = Math.max(LEAD_BUFFER_FRAMES, packet.frameCount * 4);
+    const [node, writer] = await this.#factory.createManualBufferNode({
+      channelCount,
+      frameCount,
+    });
     const gain = this.#context.createGain();
-    gain.gain.value = 1;
+    const targetGain = this.#volumes.get(path) ?? 1;
+    gain.gain.value = targetGain;
+    node.connect(gain);
     gain.connect(this.#masterGain);
 
-    const state: RemoteState = {
+    const remote: RemoteState = {
+      node,
+      writer,
       gain,
-      nextTime: this.#context.currentTime + LEAD_SECONDS,
       stats: {
         framesDecoded: 0,
         bufferedAhead: 0,
         underruns: 0,
       },
+      sampleRate: packet.sampleRate,
+      channelCount,
+      started: false,
+      droppedFrames: 0,
     };
-    this.#remotes.set(path, state);
-    return state;
+
+    node.addEventListener(UnderrunEvent.type, () => {
+      remote.stats.underruns += 1;
+    });
+
+    return remote;
   }
 
   #exposeDebugHandle() {
     if (typeof window === "undefined") {
-      return;
-    }
-    if (window.__innpubAudioPlaybackDebug) {
       return;
     }
     window.__innpubAudioPlaybackDebug = () => ({

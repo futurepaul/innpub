@@ -4,8 +4,8 @@ import * as Moq from "@kixelated/moq";
 
 import "./AudioLab.css";
 import { ensureConnection, AUDIO_TRACK } from "../multiplayer/moqConnection";
-import { AudioLabCapture } from "./labCapture";
-import { AudioLabPlayback, type PlaybackStats } from "./labPlayback";
+import { AudioCapture } from "../multiplayer/audio/capture";
+import { AudioPlayback, type PlaybackStats } from "../multiplayer/audio/playback";
 import { decodePacket, encodePacket } from "../multiplayer/audio/packets";
 
 type CaptureMode = "none" | "mic" | "tone";
@@ -51,8 +51,8 @@ export function AudioLab() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [playbackEnabled, setPlaybackEnabled] = useState(false);
 
-  const playbackRef = useRef(new AudioLabPlayback());
-  const captureRef = useRef<AudioLabCapture | null>(null);
+  const playbackRef = useRef(new AudioPlayback());
+  const captureRef = useRef<AudioCapture | null>(null);
   const broadcastRef = useRef<Moq.Broadcast | null>(null);
   const connectionRef = useRef<Moq.Connection.Established | null>(null);
   const localPathRef = useRef<Moq.Path.Valid | null>(null);
@@ -159,7 +159,8 @@ export function AudioLab() {
   }, [captureMode]);
 
   useEffect(() => {
-    captureRef.current?.updateTone({
+    void captureRef.current?.setSyntheticTone({
+      enabled: captureMode === "tone",
       frequency: toneFrequency,
       amplitude: toneAmplitude,
     });
@@ -349,18 +350,19 @@ export function AudioLab() {
 
   const startCaptureInternal = async (mode: CaptureMode) => {
     await stopCaptureInternal();
-    const capture = new AudioLabCapture({
+    const capture = new AudioCapture({
       onSamples: handleCapturedSamples,
       onLevel: level => {
         captureStatsRef.current.lastLevel = level;
       },
     });
     captureRef.current = capture;
-    capture.updateTone({
+    await capture.setSyntheticTone({
+      enabled: mode === "tone",
       frequency: toneFrequency,
       amplitude: toneAmplitude,
     });
-    await capture.start(mode);
+    await capture.start();
     writeLog("info", `Capture started (${mode})`);
   };
 

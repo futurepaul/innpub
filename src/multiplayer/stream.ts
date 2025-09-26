@@ -1257,7 +1257,7 @@ function subscribeToRemote(path: Moq.Path.Valid) {
           publishAudioDebug();
           continue;
         }
-        audioPlayback.enqueue(path, packet);
+        await audioPlayback.enqueue(path, packet);
         audioDebugPlayback.framesDecoded += packet.frameCount;
         audioDebugPlayback.lastPacketAt = Date.now();
         audioDebugPlayback.lastPath = path;
