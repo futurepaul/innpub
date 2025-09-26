@@ -18,7 +18,14 @@ import {
 } from "./moqConnection";
 import { AudioCapture, isCaptureSupported } from "./audio/capture";
 import { AudioPlayback, type PlaybackStats } from "./audio/playback";
-import { decodePacket, encodePacket } from "./audio/packets";
+import {
+  createOpusPacketDecoder,
+  createOpusPacketEncoder,
+  type DecodedPacket,
+  type OpusPacketDecoder,
+  type OpusPacketEncoder,
+  getOpusFrameSize,
+} from "./audio/packets";
 
 export type FacingDirection = 0 | 1 | 2 | 3;
 
@@ -129,12 +136,20 @@ const RESUBSCRIBE_BASE_DELAY_MS = 200;
 const RESUBSCRIBE_MAX_DELAY_MS = 8000;
 const AUDIO_DEBUG_THROTTLE_MS = 200;
 
+const packetEncoder: OpusPacketEncoder = createOpusPacketEncoder({
+  frameSize: getOpusFrameSize(),
+  sampleRate: 48_000,
+});
+const packetDecoders = new Map<string, OpusPacketDecoder>();
+let encodeQueue: Promise<void> = Promise.resolve();
+
 type AudioDebugCapture = {
   framesSent: number;
   lastSampleRate: number;
   lastLevel: number;
   subscribers: number;
   lastFrameAt: number;
+  codec: "opus";
 };
 
 type AudioDebugPlayback = {
@@ -188,6 +203,7 @@ const audioDebugCapture: AudioDebugCapture = {
   lastLevel: 0,
   subscribers: 0,
   lastFrameAt: 0,
+  codec: "opus",
 };
 
 const audioDebugPlayback: AudioDebugPlayback = {
@@ -298,23 +314,33 @@ function handleCapturedSamples(channels: Float32Array[], sampleRate: number) {
   audioDebugCapture.subscribers = audioSubscribers.size;
   audioDebugCapture.lastFrameAt = Date.now();
   publishAudioDebug();
-
   if (audioSubscribers.size === 0) {
     return;
   }
-  const packet = encodePacket(channels, sampleRate);
-  if (!packet) {
-    return;
-  }
 
-  for (const track of [...audioSubscribers]) {
-    try {
-      track.writeFrame(packet.buffer);
-    } catch (error) {
-      console.warn("failed to write audio frame", error);
-      audioSubscribers.delete(track);
-    }
-  }
+  encodeQueue = encodeQueue
+    .then(async () => {
+      const packets = await packetEncoder.encode(channels, sampleRate);
+      if (packets.length === 0) {
+        publishAudioDebug();
+        return;
+      }
+      for (const packet of packets) {
+        for (const track of [...audioSubscribers]) {
+          try {
+            track.writeFrame(packet.buffer);
+          } catch (error) {
+            console.warn("failed to write audio frame", error);
+            audioSubscribers.delete(track);
+          }
+        }
+      }
+      publishAudioDebug();
+    })
+    .catch(error => {
+      console.warn("failed to encode audio frame", error);
+      packetEncoder.reset();
+    });
 }
 
 function handleCapturedLevel(level: number) {
@@ -637,10 +663,16 @@ function addSourceState(sourceKey: string, state: PlayerState) {
         players.delete(previous.npub);
         cleanupProfileIfOrphan(previous.npub);
       } else {
-        const fallbackKey = prevSources.values().next().value;
-        const fallbackState = stateBySource.get(fallbackKey);
-        if (fallbackState) {
-          players.set(previous.npub, fallbackState);
+        const fallbackIter = prevSources.values().next();
+        const fallbackKey = fallbackIter.value;
+        if (fallbackKey) {
+          const fallbackState = stateBySource.get(fallbackKey);
+          if (fallbackState) {
+            players.set(previous.npub, fallbackState);
+          } else {
+            players.delete(previous.npub);
+            cleanupProfileIfOrphan(previous.npub);
+          }
         } else {
           players.delete(previous.npub);
           cleanupProfileIfOrphan(previous.npub);
@@ -677,10 +709,16 @@ function removeSource(sourceKey: string) {
       players.delete(existing.npub);
       cleanupProfileIfOrphan(existing.npub);
     } else {
-      const fallbackKey = bucket.values().next().value;
-      const fallbackState = stateBySource.get(fallbackKey);
-      if (fallbackState) {
-        players.set(existing.npub, fallbackState);
+      const fallbackIter = bucket.values().next();
+      const fallbackKey = fallbackIter.value;
+      if (fallbackKey) {
+        const fallbackState = stateBySource.get(fallbackKey);
+        if (fallbackState) {
+          players.set(existing.npub, fallbackState);
+        } else {
+          players.delete(existing.npub);
+          cleanupProfileIfOrphan(existing.npub);
+        }
       } else {
         players.delete(existing.npub);
         cleanupProfileIfOrphan(existing.npub);
@@ -1061,6 +1099,10 @@ function handleDisconnected() {
   clearRemoteSources();
   teardownLocalSession();
   audioPlayback.shutdown();
+  packetDecoders.clear();
+  packetEncoder.reset();
+  encodeQueue = Promise.resolve();
+  audioDebugCapture.codec = "opus";
   if (chatMessages.size > 0) {
     chatMessages.clear();
     notifyChats();
@@ -1192,6 +1234,8 @@ function subscribeToRemote(path: Moq.Path.Valid) {
     const audioTrack = broadcast.subscribe(AUDIO_TRACK, 0);
     clearResetErrorCounts(`${path}:${AUDIO_TRACK}`);
     subscription.audioTrack = audioTrack;
+    const decoder = createOpusPacketDecoder();
+    packetDecoders.set(path, decoder);
     audioTrack.closed
       .catch(() => undefined)
       .finally(() => {
@@ -1199,6 +1243,7 @@ function subscribeToRemote(path: Moq.Path.Valid) {
           subscription.audioTrack = undefined;
         }
         audioPlayback.close(path);
+        packetDecoders.delete(path);
         publishAudioDebug(true);
       });
 
@@ -1209,7 +1254,20 @@ function subscribeToRemote(path: Moq.Path.Valid) {
         if (!frame) {
           break;
         }
-        const packet = decodePacket(frame);
+        const packetDecoder = packetDecoders.get(path);
+        if (!packetDecoder) {
+          continue;
+        }
+        let packet;
+        try {
+          packet = await packetDecoder.decode(frame);
+        } catch (error) {
+          console.warn(`failed to decode audio frame for ${path}`, error);
+          packetDecoder.reset();
+          audioDebugPlayback.decodeFailures += 1;
+          publishAudioDebug();
+          continue;
+        }
         if (!packet) {
           audioDebugPlayback.decodeFailures += 1;
           publishAudioDebug();
@@ -1223,10 +1281,12 @@ function subscribeToRemote(path: Moq.Path.Valid) {
       }
     })().catch(error => {
       logTrackSubscribeFailure(path, AUDIO_TRACK, error);
+      packetDecoders.delete(path);
       scheduleResubscribe(path);
     });
   } catch (error) {
     logTrackSubscribeFailure(path, AUDIO_TRACK, error);
+    packetDecoders.delete(path);
     scheduleResubscribe(path);
   }
 
@@ -1372,6 +1432,7 @@ function unsubscribeFromRemote(path: Moq.Path.Valid) {
     subscription.chatTrack?.close();
   } catch {}
   audioPlayback.close(path);
+  packetDecoders.delete(path);
   removeSource(subscription.sourceKey);
   if (subscription.npub) {
     setRooms(subscription.npub, []);
@@ -1491,7 +1552,7 @@ function pruneRemoteSubscriptions() {
   const threshold = now() - STALE_TIMEOUT_MS;
   for (const [path, subscription] of remoteSubscriptions) {
     if (subscription.lastSeen < threshold) {
-      unsubscribeFromRemote(path);
+      unsubscribeFromRemote(path as Moq.Path.Valid);
     }
   }
 }
@@ -1538,6 +1599,10 @@ async function startMicrophoneCapture(): Promise<void> {
     amplitude: syntheticToneAmplitude,
   });
 
+  packetEncoder.reset();
+  encodeQueue = Promise.resolve();
+  audioDebugCapture.codec = "opus";
+
   try {
     await capture.start();
     audioCapture = capture;
@@ -1569,6 +1634,10 @@ async function stopMicrophoneCapture(force = false): Promise<void> {
   } catch (error) {
     console.warn("failed to stop microphone", error);
   }
+
+  packetEncoder.reset();
+  encodeQueue = Promise.resolve();
+  audioDebugCapture.codec = "opus";
 
   currentSpeakingLevel = 0;
   lastSpeakingSentAt = 0;

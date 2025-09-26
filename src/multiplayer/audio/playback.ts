@@ -56,7 +56,12 @@ export class AudioPlayback {
 
     const buffer = context.createBuffer(channels.length, frameCount, sampleRate);
     for (let channel = 0; channel < channels.length; channel += 1) {
-      buffer.copyToChannel(channels[channel], channel);
+      const source = channels[channel];
+      if (!source) {
+        continue;
+      }
+      const view = source as unknown as Float32Array<ArrayBuffer>;
+      buffer.copyToChannel(view, channel);
     }
 
     const remote = this.#remotes.get(path) ?? this.#createRemote(path);
