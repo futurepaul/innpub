@@ -295,6 +295,9 @@ body {
   justify-content: center;
   box-shadow: 0 6px 14px rgba(0, 0, 0, 0.35);
   cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .dpad-btn:active {
