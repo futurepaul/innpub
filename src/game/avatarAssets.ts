@@ -73,7 +73,10 @@ async function loadSprite(url: string): Promise<AvatarDisplayInstance> {
   });
 
   const canvasUrl = canvasKeyFromImage(image, sanitized) ?? sanitized;
-  const texture = await Assets.load<Texture>(canvasUrl);
+  const assetConfig = canvasUrl.startsWith("data:")
+    ? canvasUrl
+    : { src: canvasUrl, data: { crossOrigin: "anonymous" as const } };
+  const texture = await Assets.load<Texture>(assetConfig);
   if (texture.source?.style) {
     texture.source.style.scaleMode = SCALE_MODES.LINEAR;
   }
