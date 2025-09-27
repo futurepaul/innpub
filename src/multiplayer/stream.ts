@@ -125,6 +125,7 @@ const hangBroadcastPath = new Signal<Moq.Path.Valid | undefined>(undefined);
 const hangPublishEnabled = new Signal(false);
 const roomAudioSubscriptions = new Map<string, RoomAudioSubscription>();
 const remoteAudioSessions = new Map<Moq.Path.Valid, RemoteAudioSession>();
+const ROOM_PROTOCOL_VERSION = "v2";
 
 const AUDIO_SESSION_SUFFIX = Math.random().toString(36).slice(2, 8);
 const hangPublish =
@@ -250,11 +251,11 @@ function ensureBeforeUnloadHook() {
 function buildAudioBroadcastPath(room: string, npub: string): Moq.Path.Valid {
   const normalizedRoom = room.trim();
   const normalizedNpub = npub.trim();
-  return Moq.Path.from("innpub", "rooms", normalizedRoom, normalizedNpub, AUDIO_SESSION_SUFFIX);
+  return Moq.Path.from("innpub", "rooms", ROOM_PROTOCOL_VERSION, normalizedRoom, normalizedNpub, AUDIO_SESSION_SUFFIX);
 }
 
 function parseAudioBroadcastPath(path: Moq.Path.Valid): { room?: string; npub?: string } {
-  const base = Moq.Path.from("innpub", "rooms");
+  const base = Moq.Path.from("innpub", "rooms", ROOM_PROTOCOL_VERSION);
   const suffix = Moq.Path.stripPrefix(base, path);
   if (suffix === null) {
     return {};
@@ -363,7 +364,7 @@ function ensureRoomSubscription(room: string) {
   if (roomAudioSubscriptions.has(room)) {
     return;
   }
-  const prefix = Moq.Path.from("innpub", "rooms", room);
+  const prefix = Moq.Path.from("innpub", "rooms", ROOM_PROTOCOL_VERSION, room);
   const roomWatcher = new HangRoom({ connection: hangConnectionSignal, path: prefix });
   roomWatcher.onRemote((path, broadcast) => {
     if (broadcast) {
@@ -1239,14 +1240,17 @@ function subscribeToRemote(path: Moq.Path.Valid) {
   (async () => {
     for (;;) {
       const frame = await stateConsumer.decode();
-      if (!frame) {
-        break;
-      }
+      if (!frame) break;
+
       let state: PlayerState | null = null;
       try {
-        state = parseRemoteState(JSON.parse(textDecoder.decode(frame.data)));
+        const payload = JSON.parse(textDecoder.decode(frame.data));
+        state = parseRemoteState(payload);
       } catch (error) {
         console.warn("failed to decode remote state", error);
+        continue;
+      }
+      if (!state) {
         continue;
       }
       if (!state) {
@@ -1265,6 +1269,7 @@ function subscribeToRemote(path: Moq.Path.Valid) {
       } else if (state.rooms && state.rooms.length > 0) {
         setRooms(state.npub, state.rooms);
       }
+    }
     }
   })()
     .catch(error => {
