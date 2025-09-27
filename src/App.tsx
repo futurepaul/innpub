@@ -7,8 +7,8 @@ import {
   createMemo,
   createSignal,
   For,
+  from,
   onCleanup,
-  onMount,
   Show,
   type Component,
 } from "solid-js";
@@ -46,7 +46,9 @@ export const App: Component = () => {
 
   const [playerRooms, setPlayerRooms] = createSignal<string[]>([]);
   const [logMessages, setLogMessages] = createSignal<string[]>([]);
-  const [pubkey, setPubkey] = createSignal<string | null>(null);
+  // Use account manager as source of truth for active account
+  const activeAccount = from(manager.active$);
+  const pubkey = createMemo(() => activeAccount()?.pubkey || null);
   const [npub, setNpub] = createSignal<string | null>(null);
   const [localAlias, setLocalAlias] = createSignal<string | null>(null);
   const [remotePlayers, setRemotePlayers] = createSignal<PlayerState[]>([]);
@@ -67,20 +69,35 @@ export const App: Component = () => {
     });
   };
 
-  const handleLogin = (hex: string, alias?: string) => {
-    const normalized = hex.toLowerCase();
-    const encoded = npubEncode(normalized);
-    const epoch = Date.now();
-    resetChatSession(epoch);
-    chatSeenRef.clear();
-    setChatMap(new Map());
-    pubkeyRef = normalized;
-    setPubkey(normalized);
-    setNpub(encoded);
-    setLocalAlias(alias ?? null);
-    appendLog(alias ? `Joined as ${alias} (${encoded})` : `Logged in as ${encoded}`);
-    gameInstance?.spawn();
-  };
+  // Effect to handle when account becomes active
+  createEffect(() => {
+    const account = activeAccount();
+    if (account) {
+      const normalized = account.pubkey.toLowerCase();
+      const encoded = npubEncode(normalized);
+      const epoch = Date.now();
+      resetChatSession(epoch);
+      chatSeenRef.clear();
+      setChatMap(new Map());
+      pubkeyRef = normalized;
+      setNpub(encoded);
+      // Get display name from account metadata or profile
+      const profile = profileMap().get(account.pubkey);
+      const alias = profile ? getDisplayName(profile.profile) : null;
+      setLocalAlias(alias ?? null);
+      appendLog(alias ? `Joined as ${alias} (${encoded})` : `Logged in as ${encoded}`);
+      gameInstance?.spawn();
+    } else {
+      // Handle logout
+      const previousNpub = pubkeyRef;
+      if (previousNpub) {
+        removePlayer(previousNpub);
+      }
+      pubkeyRef = null;
+      setNpub(null);
+      setLocalAlias(null);
+    }
+  });
 
   // Effect to sync pubkeyRef with pubkey signal
   createEffect(() => {
@@ -273,23 +290,18 @@ export const App: Component = () => {
   });
 
   const handleLogout = () => {
-    const previousNpub = pubkeyRef;
-    if (previousNpub) {
-      removePlayer(previousNpub);
-      setHeadRects(prev => {
-        const next = new Map(prev);
-        next.delete(previousNpub);
-        return next;
-      });
-    }
-
     // Clear the active account from the manager
+    // This will trigger the effect above to handle most of the cleanup
     manager.clearActive();
 
-    pubkeyRef = null;
-    setPubkey(null);
-    setNpub(null);
-    setLocalAlias(null);
+    // Additional cleanup not handled by the effect
+    setHeadRects(prev => {
+      const next = new Map(prev);
+      if (pubkeyRef) {
+        next.delete(pubkeyRef);
+      }
+      return next;
+    });
     appendLog("Logged out");
     avatarRef = null;
     gameInstance?.setAvatar(null);
@@ -425,7 +437,7 @@ export const App: Component = () => {
       </div>
 
       <Show when={!pubkey()}>
-        <Login onLogin={handleLogin} />
+        <Login />
       </Show>
     </div>
   );

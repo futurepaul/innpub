@@ -1,7 +1,7 @@
 import { AccountManager } from "applesauce-accounts";
 import { registerCommonAccountTypes } from "applesauce-accounts/accounts";
-import { eventStore } from "./client";
-import { getProfileContent } from "applesauce-core/helpers";
+import { NostrConnectSigner } from "applesauce-signers";
+import { pool } from "./client";
 
 // create an account manager instance
 const manager = new AccountManager();
@@ -9,12 +9,17 @@ const manager = new AccountManager();
 // register common account types
 registerCommonAccountTypes(manager);
 
+// Setup nostr connect signer with pool
+NostrConnectSigner.pool = pool
+
 // first load all accounts from localStorage
 try {
   const json = JSON.parse(localStorage.getItem("accounts") || "[]");
   await manager.fromJSON(json);
 }
-catch {}
+catch (error) {
+  console.error("Error loading accounts from localStorage", error);
+}
 
 // next, subscribe to any accounts added or removed
 manager.accounts$.subscribe(() => {
@@ -26,22 +31,15 @@ manager.accounts$.subscribe(() => {
 try {
   const active = localStorage.getItem("active");
   if (active) manager.setActive(active);
-} catch {}
+} catch (error) {
+  console.error("Error loading active account from localStorage", error);
+}
 
 // subscribe to active changes
 manager.active$.subscribe((account) => {
   if (account) localStorage.setItem("active", account.id);
-  else localStorage.clearItem("active");
+  else localStorage.setItem("active", "");
 });
-
-// Update account metadata when profiles load
-eventStore.filters({kinds: [0]}).subscribe((event) => {
-  const account = manager.getAccountForPubkey(event.pubkey);
-  if(!account) return
-
-  // Update accounts metadata and save it to localStorage
-  manager.setAccountMetadata(account, getProfileContent(event))
-})
 
 // Export the manager instance
 export { manager };
