@@ -12,176 +12,199 @@ import {
   Show,
   type Component,
 } from "solid-js";
+
 import { Console, Dpad, Header, Login } from "./components";
 import { initGame, type GameInstance } from "./game/initGame";
 import "./index.css";
+import { createObservableSignal } from "./ui/useObservable";
 import {
-  getAudioState,
+  gameStore,
   getProfilePictureUrl,
-  removePlayer,
-  resetChatSession,
-  setMicrophoneEnabled,
+  login as loginService,
+  logout as logoutService,
+  requestSpawn,
+  resetChat,
+  setAvatar,
+  setMicEnabled,
   setSpeakerEnabled,
-  startStream,
-  stopStream,
-  subscribe,
-  subscribeAudioState,
-  subscribeChats,
-  subscribeProfiles,
-  updateLocalPlayer,
-  updateLocalRooms,
-  type AudioControlState,
-  type ChatMessage,
-  type FacingDirection,
-  type PlayerProfile,
-  type PlayerState
-} from "./multiplayer/stream";
+  startGameServices,
+  stopGameServices,
+} from "./game/service";
+import {
+  type AudioState,
+  type ChatEntry,
+  type HeadBounds,
+  type PlayerProfileEntry,
+  type RemotePlayerState,
+} from "./game/state";
+
+interface OverlayEntry {
+  npub: string;
+  rect: HeadBounds["rect"];
+  name: string;
+  avatar: string;
+  speakingLevel: number;
+  chat?: ChatEntry;
+}
 
 export const App: Component = () => {
   let containerRef: HTMLDivElement | undefined;
   let gameInstance: GameInstance | null = null;
-  let avatarRef: string | null = null;
-  let pubkeyRef: string | null = null;
-  let remotePlayersRef: PlayerState[] = [];
+  let cleanupRenderer: (() => void) | undefined;
+  let disposed = false;
 
-  const [playerRooms, setPlayerRooms] = createSignal<string[]>([]);
-  const [logMessages, setLogMessages] = createSignal<string[]>([]);
-  // Use account manager as source of truth for active account
+  startGameServices();
+
   const activeAccount = from(manager.active$);
-  const pubkey = createMemo(() => activeAccount()?.pubkey || null);
+  const pubkey = createMemo(() => activeAccount()?.pubkey?.toLowerCase() ?? null);
   const [npub, setNpub] = createSignal<string | null>(null);
   const [localAlias, setLocalAlias] = createSignal<string | null>(null);
-  const [remotePlayers, setRemotePlayers] = createSignal<PlayerState[]>([]);
-  const [profileMap, setProfileMap] = createSignal<Map<string, PlayerProfile>>(new Map());
-  const [headRects, setHeadRects] = createSignal<Map<string, { rect: { x: number; y: number; width: number; height: number }; facing: FacingDirection }>>(new Map());
-  const [audioState, setAudioState] = createSignal<AudioControlState>(getAudioState());
-  const [chatMap, setChatMap] = createSignal<Map<string, ChatMessage>>(new Map());
-  let profileMapRef: Map<string, PlayerProfile> = new Map();
-  let chatSeenRef: Map<string, string> = new Map();
 
-  const appendLog = (message: string) => {
-    setLogMessages(prev => {
-      const next = [...prev, message];
-      if (next.length > 100) {
-        return next.slice(next.length - 100);
-      }
-      return next;
-    });
-  };
+  const audioState = createObservableSignal<AudioState>(gameStore.audio$, gameStore.getSnapshot().audio);
+  const chatMap = createObservableSignal<ReadonlyMap<string, ChatEntry>>(gameStore.chat$, gameStore.getSnapshot().chat);
+  const profileMap = createObservableSignal<ReadonlyMap<string, PlayerProfileEntry>>(gameStore.profiles$, gameStore.getSnapshot().profiles);
+  const remotePlayers = createObservableSignal<ReadonlyMap<string, RemotePlayerState>>(gameStore.remotePlayers$, gameStore.getSnapshot().remotePlayers);
+  const headBounds = createObservableSignal<ReadonlyMap<string, HeadBounds>>(gameStore.headBounds$, gameStore.getSnapshot().headBounds);
+  const logsSignal = createObservableSignal(gameStore.logs$, gameStore.getSnapshot().logs);
+  const localPlayerSignal = createObservableSignal(gameStore.localPlayer$, gameStore.getSnapshot().localPlayer);
 
-  // Effect to handle when account becomes active
+  const logMessages = createMemo(() => logsSignal().map(entry => entry.message));
+
+  const isLoggedIn = createMemo(() => Boolean(activeAccount() ?? localPlayerSignal()?.npub ?? null));
+  const showLoginOverlay = createMemo(() => !activeAccount());
+
+  const avatarUrl = createMemo(() => {
+    const pk = pubkey();
+    if (!pk) {
+      return null;
+    }
+    return getProfilePictureUrl(pk) ?? null;
+  });
+
+  createEffect(() => {
+    setAvatar(avatarUrl());
+  });
+
+  const chatSeenRef = new Map<string, string>();
+
+  let lastAccountPubkey: string | null = null;
+
   createEffect(() => {
     const account = activeAccount();
-    if (account) {
-      const normalized = account.pubkey.toLowerCase();
+    const normalized = account?.pubkey?.toLowerCase() ?? null;
+
+    if (!normalized) {
+      if (lastAccountPubkey) {
+        void setMicEnabled(false);
+        setSpeakerEnabled(true);
+        resetChat();
+        chatSeenRef.clear();
+        logoutService();
+        setAvatar(null);
+        setLocalAlias(null);
+        setNpub(null);
+        gameStore.logInfo("Logged out");
+      }
+      lastAccountPubkey = null;
+      return;
+    }
+
+    if (normalized !== lastAccountPubkey) {
+      lastAccountPubkey = normalized;
       const encoded = npubEncode(normalized);
-      const epoch = Date.now();
-      resetChatSession(epoch);
-      chatSeenRef.clear();
-      setChatMap(new Map());
-      pubkeyRef = normalized;
       setNpub(encoded);
-      // Get display name from account metadata or profile
-      const profile = profileMap().get(account.pubkey);
-      const alias = profile ? getDisplayName(profile.profile) : null;
-      setLocalAlias(alias ?? null);
-      appendLog(alias ? `Joined as ${alias} (${encoded})` : `Logged in as ${encoded}`);
-      gameInstance?.spawn();
-    } else {
-      // Handle logout
-      const previousNpub = pubkeyRef;
-      if (previousNpub) {
-        removePlayer(previousNpub);
-      }
-      pubkeyRef = null;
-      setNpub(null);
-      setLocalAlias(null);
-    }
-  });
-
-  // Effect to sync pubkeyRef with pubkey signal
-  createEffect(() => {
-    pubkeyRef = pubkey();
-  });
-
-  // Effect to sync profileMapRef with profileMap signal
-  createEffect(() => {
-    profileMapRef = profileMap();
-  });
-
-  // Main stream setup effect
-  startStream();
-  const unsubscribePlayers = subscribe(states => {
-    remotePlayersRef = states;
-    setRemotePlayers(states);
-  });
-  const unsubscribeProfiles = subscribeProfiles(map => {
-    const clone = new Map(map);
-    profileMapRef = clone;
-    setProfileMap(clone);
-  });
-  const unsubscribeAudio = subscribeAudioState(state => {
-    setAudioState(state);
-  });
-  const unsubscribeChats = subscribeChats(map => {
-    const clone = new Map(map);
-    setChatMap(clone);
-
-    const seen = chatSeenRef;
-    for (const key of [...seen.keys()]) {
-      if (!clone.has(key)) {
-        seen.delete(key);
-      }
+      resetChat(Date.now());
+      chatSeenRef.clear();
+      loginService(normalized, null);
+      requestSpawn();
+      gameStore.logInfo(`Logged in as ${encoded}`);
     }
 
-    clone.forEach(entry => {
-      const lastId = seen.get(entry.npub);
+    const profile = profileMap().get(normalized)?.profile;
+    const alias = profile ? getDisplayName(profile) : null;
+    setLocalAlias(alias ?? null);
+  });
+
+  createEffect(() => {
+    const entries = chatMap();
+    for (const [npubKey, entry] of entries) {
+      const lastId = chatSeenRef.get(npubKey);
       if (lastId === entry.id) {
-        return;
+        continue;
       }
-      seen.set(entry.npub, entry.id);
+      chatSeenRef.set(npubKey, entry.id);
 
-      const currentPubkey = pubkeyRef;
-      const isLocal = currentPubkey ? entry.npub === currentPubkey : false;
-      const profile = profileMapRef.get(entry.npub)?.profile;
+      const currentPubkey = pubkey();
+      const isLocal = currentPubkey ? npubKey === currentPubkey : false;
+      const profile = profileMap().get(npubKey)?.profile;
       const display = isLocal
         ? "You"
         : profile
-          ? getDisplayName(profile) ?? `${entry.npub.slice(0, 12)}…`
-          : `${entry.npub.slice(0, 12)}…`;
-      appendLog(`[Chat] ${display}: ${entry.message}`);
-    });
-  });
-
-  onCleanup(() => {
-    if (pubkeyRef) {
-      removePlayer(pubkeyRef);
+            ? getDisplayName(profile) ?? `${npubKey.slice(0, 12)}…`
+            : `${npubKey.slice(0, 12)}…`;
+      gameStore.logInfo(`[Chat] ${display}: ${entry.message}`);
     }
-    setPlayerRooms([]);
-    unsubscribeProfiles();
-    unsubscribePlayers();
-    unsubscribeAudio();
-    unsubscribeChats();
-    chatSeenRef.clear();
-    setChatMap(new Map());
-    stopStream();
+
+    for (const key of [...chatSeenRef.keys()]) {
+      if (!entries.has(key)) {
+        chatSeenRef.delete(key);
+      }
+    }
   });
 
-  // Effect to update local rooms
-  createEffect(() => {
-    updateLocalRooms(playerRooms());
+  const overlayEntries = createMemo<OverlayEntry[]>(() => {
+    const bounds = headBounds();
+    const remote = remotePlayers();
+    const profiles = profileMap();
+    const chats = chatMap();
+    const localPlayer = localPlayerSignal();
+    const localNpub = localPlayer?.npub ?? null;
+    const localAvatar = avatarUrl();
+    const alias = localAlias();
+
+    const entries: OverlayEntry[] = [];
+    bounds.forEach((value, npubKey) => {
+      const isLocal = localNpub ? npubKey === localNpub : false;
+      const remoteState = remote.get(npubKey);
+      const speakingLevel = isLocal ? localPlayer?.speakingLevel ?? 0 : remoteState?.speakingLevel ?? 0;
+
+      let display = profiles.get(npubKey)?.profile ? getDisplayName(profiles.get(npubKey)!.profile!) : `${npubKey.slice(0, 12)}…`;
+      if (isLocal) {
+        if (alias) {
+          display = alias;
+        } else if (npub()) {
+          display = `${npub()!.slice(0, 12)}…`;
+        }
+      }
+
+      const resolvedAvatar =
+        (isLocal ? localAvatar ?? undefined : getProfilePictureUrl(npubKey) ?? undefined) ??
+        `https://robohash.org/${npubKey}.png`;
+
+      entries.push({
+        npub: npubKey,
+        rect: value.rect,
+        name: display ?? "Player",
+        avatar: resolvedAvatar,
+        speakingLevel,
+        chat: chats.get(npubKey),
+      });
+    });
+
+    return entries;
   });
 
-  // Game initialization effect
+  const handleLogout = () => {
+    manager.clearActive();
+  };
+
   const desiredAspect = 3 / 2;
   const app = new Application();
-  let disposed = false;
-  let cleanup: (() => void) | undefined;
   let hasRenderer = false;
   let canvasAttached = false;
 
   const resizeViewport = () => {
-    if(!containerRef) return
+    if (!containerRef) return;
     if (!hasRenderer || !app.renderer) return;
 
     const parent = containerRef.parentElement as HTMLElement | null;
@@ -235,40 +258,11 @@ export const App: Component = () => {
         containerRef?.appendChild(app.canvas);
       }
       canvasAttached = true;
-      const game = await initGame(app, {
-        onPlayerPosition: data => {
-          const currentNpub = pubkeyRef;
-          if (currentNpub) {
-            updateLocalPlayer({ npub: currentNpub, x: data.x, y: data.y, facing: data.facing });
-          }
-        },
-        onConsoleMessage: appendLog,
-        onHeadPosition: (id, rect, facing) => {
-          const key = id === "local" ? pubkeyRef : id;
-          if (!key) {
-            return;
-          }
 
-          setHeadRects(prev => {
-            const next = new Map(prev);
-            if (rect) {
-              next.set(key, { rect, facing });
-            } else {
-              next.delete(key);
-            }
-            return next;
-          });
-        },
-        onPlayerRooms: rooms => {
-          setPlayerRooms(rooms);
-        },
-      });
+      const game = await initGame(app, gameStore);
       gameInstance = game;
-      game.setAvatar(avatarRef);
-      const currentNpub = pubkeyRef;
-      const remotes = remotePlayersRef.filter(player => player.npub !== currentNpub);
-      game.syncPlayers(remotes);
-      cleanup = () => {
+
+      cleanupRenderer = () => {
         game.destroy();
         gameInstance = null;
       };
@@ -279,7 +273,7 @@ export const App: Component = () => {
 
   onCleanup(() => {
     disposed = true;
-    cleanup?.();
+    cleanupRenderer?.();
     window.removeEventListener("resize", resizeViewport);
     if (canvasAttached && app.renderer && app.canvas.parentElement === containerRef) {
       containerRef?.removeChild(app.canvas);
@@ -287,111 +281,17 @@ export const App: Component = () => {
     if (hasRenderer && app.renderer) {
       app.destroy(true);
     }
+    logoutService();
+    stopGameServices();
   });
-
-  const handleLogout = () => {
-    // Clear the active account from the manager
-    // This will trigger the effect above to handle most of the cleanup
-    manager.clearActive();
-
-    // Additional cleanup not handled by the effect
-    setHeadRects(prev => {
-      const next = new Map(prev);
-      if (pubkeyRef) {
-        next.delete(pubkeyRef);
-      }
-      return next;
-    });
-    appendLog("Logged out");
-    avatarRef = null;
-    gameInstance?.setAvatar(null);
-    setPlayerRooms([]);
-    void setMicrophoneEnabled(false);
-    const epoch = Date.now();
-    resetChatSession(epoch);
-    chatSeenRef.clear();
-    setChatMap(new Map());
-  };
-
-
-  const avatarUrl = createMemo(() => {
-    const pk = pubkey();
-    if (!pk) {
-      return null;
-    }
-    return getProfilePictureUrl(pk) ?? null;
-  });
-
-  // Avatar effect
-  createEffect(() => {
-    avatarRef = avatarUrl();
-    if (!gameInstance) {
-      return;
-    }
-    gameInstance.setAvatar(avatarUrl());
-  });
-
-  // Remote players sync effect
-  createEffect(() => {
-    const game = gameInstance;
-    if (!game) return;
-
-    const currentNpub = pubkeyRef;
-    const remotes = remotePlayers().filter(player => player.npub !== currentNpub);
-    game.syncPlayers(remotes);
-  });
-
-  const overlayEntries = createMemo(() => {
-    const stateMap = new Map(remotePlayers().map(player => [player.npub, player]));
-      const entries: Array<{
-      npub: string;
-      rect: { x: number; y: number; width: number; height: number };
-      name: string;
-      avatar: string;
-      speakingLevel: number;
-      chat?: ChatMessage;
-    }> = [];
-    headRects().forEach(({ rect }, key) => {
-      const profile = profileMap().get(key)?.profile;
-      let display = profile ? getDisplayName(profile) : `${key.slice(0, 12)}…`;
-      if (key === (npub() ?? "")) {
-        // For local player, show alias if available, otherwise profile name or npub
-        const alias = localAlias();
-        if (alias) {
-          display = alias;
-        } else {
-          const localProfile = profile;
-          const name = localProfile ? getDisplayName(localProfile) : null;
-          if (name) {
-            display = name;
-          } else {
-            const currentNpub = npub();
-            if (currentNpub) {
-              display = `${currentNpub.slice(0, 12)}…`;
-            }
-          }
-        }
-      }
-
-      const avatar =
-        getProfilePictureUrl(key) ??
-        (key === (npub() ?? "") ? avatarUrl() ?? undefined : undefined) ??
-        `https://robohash.org/${key}.png`;
-
-      const playerState = stateMap.get(key);
-      const speakingLevel = playerState?.speakingLevel ?? 0;
-      const chat = chatMap().get(key);
-
-      entries.push({ npub: key, rect, name: display ?? "Player", avatar, speakingLevel, chat });
-    });
-    return entries;
-  });
-
 
   return (
     <div class="app-shell">
       <div class="app-main">
         <Header
+          pubkey={pubkey()}
+          npub={npub()}
+          localAlias={localAlias()}
           profileMap={profileMap()}
           audioState={audioState()}
           onLogout={handleLogout}
@@ -402,7 +302,7 @@ export const App: Component = () => {
             <div class="game-overlays">
               <div class="player-overlays">
                 <For each={overlayEntries()}>
-                  {(entry) => (
+                  {entry => (
                     <div
                       class={`avatar-head${entry.speakingLevel > 0.02 ? " is-speaking" : ""}`}
                       style={{
@@ -412,33 +312,35 @@ export const App: Component = () => {
                       }}
                     >
                       <img src={entry.avatar} alt={entry.name} />
-                      <Show when={entry.chat}>
-                        <div class="chat-bubble">
-                          <span>{entry.chat!.message}</span>
-                        </div>
-                      </Show>
-                      <div class="avatar-label">{entry.name}</div>
+                      <div class="avatar-head__label">
+                        <span>{entry.name}</span>
+                        <Show when={entry.chat}>
+                          <span class="avatar-head__chat">{entry.chat!.message}</span>
+                        </Show>
+                      </div>
                     </div>
                   )}
                 </For>
               </div>
-              <Dpad visible={!!pubkey()} />
             </div>
           </div>
         </div>
 
         <Console
-          isLoggedIn={!!pubkey()}
+          isLoggedIn={!showLoginOverlay()}
           logMessages={logMessages()}
-          onAppendLog={appendLog}
-          onSetInputCaptured={(captured) => gameInstance?.setInputCaptured(captured)}
-          onSpawn={() => gameInstance?.spawn()}
+          onAppendLog={message => gameStore.logInfo(message)}
+          onSetInputCaptured={captured => gameStore.dispatch({ type: "set-input-captured", captured })}
+          onSpawn={requestSpawn}
         />
       </div>
 
-      <Show when={!pubkey()}>
-        <Login />
-      </Show>
+      <div class="app-sidebar">
+        <Show when={showLoginOverlay()}>
+          <Login />
+        </Show>
+        <Dpad visible={!showLoginOverlay()} />
+      </div>
     </div>
   );
 };

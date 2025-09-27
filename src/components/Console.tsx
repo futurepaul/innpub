@@ -7,7 +7,7 @@ import {
   Show,
   type Component,
 } from "solid-js";
-import { sendChatMessage } from "../multiplayer/stream";
+import { sendChat } from "../game/service";
 
 export interface ConsoleProps {
   /** Whether the user is logged in (affects console behavior) */
@@ -132,7 +132,7 @@ export const Console: Component<ConsoleProps> = (props) => {
       }
     } else if (trimmed.length > 0) {
       try {
-        await sendChatMessage(trimmed);
+        await sendChat(trimmed);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to send chat";
         props.onAppendLog(`[Chat] ${message}`);

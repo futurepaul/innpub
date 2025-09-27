@@ -10,22 +10,18 @@ import {
   type Ticker,
   AnimatedSprite,
 } from "pixi.js";
-import type { FacingDirection, PlayerState } from "../multiplayer/stream";
+import type { Subscription } from "rxjs";
 import { XMLParser } from "fast-xml-parser";
 
-export type GameHooks = {
-  onPlayerPosition?: (position: { x: number; y: number; facing: FacingDirection }) => void;
-  onConsoleMessage?: (message: string) => void;
-  onHeadPosition?: (id: string, rect: { x: number; y: number; width: number; height: number } | null, facing: FacingDirection) => void;
-  onPlayerRooms?: (rooms: string[]) => void;
-};
+import type {
+  FacingDirection,
+  GameStore,
+  LocalPlayerState,
+  RemotePlayerState,
+} from "./state";
 
 export type GameInstance = {
   destroy: () => void;
-  setInputCaptured: (captured: boolean) => void;
-  spawn: () => void;
-  setAvatar: (url?: string | null) => void;
-  syncPlayers: (players: PlayerState[]) => void;
 };
 
 type TileLayer = {
@@ -44,6 +40,15 @@ type CollisionBox = {
 type RoomDefinition = {
   name: string;
   points: Array<{ x: number; y: number }>;
+};
+
+type LegacyPlayerState = {
+  npub: string;
+  x: number;
+  y: number;
+  facing: FacingDirection;
+  rooms?: string[];
+  speakingLevel?: number;
 };
 
 type TilesetInfo = {
@@ -109,7 +114,7 @@ const parser = new XMLParser({
 
 const WHITE_TEXTURE = Texture.WHITE;
 
-export async function initGame(app: Application, hooks: GameHooks = {}): Promise<GameInstance> {
+export async function initGame(app: Application, store: GameStore): Promise<GameInstance> {
   const mapUrl = new URL("/map/innpub-interior.tmx", window.location.origin).href;
   const map = await loadTiledMap(mapUrl);
 
@@ -119,6 +124,19 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
 
   const mapPixelWidth = map.width * map.tileWidth;
   const mapPixelHeight = map.height * map.tileHeight;
+
+  const subscriptions: Subscription[] = [];
+  let currentLocalNpub: string | null = store.getSnapshot().localPlayer?.npub ?? null;
+  let currentAvatarUrl: string | null | undefined = store.getSnapshot().localPlayer?.avatarUrl ?? null;
+
+  const toLegacyState = (player: RemotePlayerState | LocalPlayerState): LegacyPlayerState => ({
+    npub: player.npub,
+    x: player.position.x,
+    y: player.position.y,
+    facing: player.facing,
+    rooms: player.rooms,
+    speakingLevel: player.speakingLevel,
+  });
 
   let tilesheetTexture: Texture | undefined;
   try {
@@ -291,14 +309,14 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     container: Container;
     head: Sprite;
     body: AnimatedSprite;
-    lastState?: PlayerState;
+    lastState?: LegacyPlayerState;
     lastFacing: FacingDirection;
     lastHorizontal: number;
   };
 
   const remotePlayers = new Map<string, ManagedPlayer>();
 
-  const getOrCreateRemote = (state: PlayerState): ManagedPlayer => {
+  const getOrCreateRemote = (state: LegacyPlayerState): ManagedPlayer => {
     let managed = remotePlayers.get(state.npub);
     if (!managed) {
       const { container, head, body } = createPlayerContainer();
@@ -317,7 +335,7 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     return managed;
   };
 
-  const updateRemotePlayer = (managed: ManagedPlayer, state: PlayerState) => {
+  const updateRemotePlayer = (managed: ManagedPlayer, state: LegacyPlayerState) => {
     const prev = managed.lastState;
     const dx = prev ? state.x - prev.x : 0;
     const dy = prev ? state.y - prev.y : 0;
@@ -374,7 +392,7 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
 
   type Direction = "up" | "down" | "left" | "right";
   const pressed = new Set<Direction>();
-  let inputCaptured = false;
+  let inputCaptured = store.getSnapshot().settings.inputCaptured;
   let isWalking = false;
   let lastFacing: FacingDirection = 1;
   let lastHorizontalDirection = 1;
@@ -449,11 +467,39 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     footBounds.height = footHeight;
   };
 
-  const reportPosition = () => {
-    hooks.onPlayerPosition?.({
-      x: player.x,
-      y: player.y,
+  let lastReportedTransform: { x: number; y: number; facing: FacingDirection } | null = null;
+
+  const reportPosition = (force = false) => {
+    if (!currentLocalNpub) {
+      lastReportedTransform = null;
+      return;
+    }
+
+    const next = {
+      x: Math.round(player.x * 1000) / 1000,
+      y: Math.round(player.y * 1000) / 1000,
       facing: lastFacing,
+    } as const;
+
+    const changed =
+      !lastReportedTransform ||
+      force ||
+      lastReportedTransform.x !== next.x ||
+      lastReportedTransform.y !== next.y ||
+      lastReportedTransform.facing !== next.facing;
+
+    if (!changed) {
+      return;
+    }
+
+    lastReportedTransform = { ...next };
+
+    store.dispatch({
+      type: "set-local-transform",
+      transform: {
+        position: { x: next.x, y: next.y },
+        facing: next.facing,
+      },
     });
   };
 
@@ -476,26 +522,29 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     const roomsChanged = !setsEqual(activeRooms, nextRooms);
     for (const roomName of nextRooms) {
       if (!activeRooms.has(roomName)) {
-        hooks.onConsoleMessage?.(`Entered ${roomName}`);
+        store.logInfo(`Entered ${roomName}`);
       }
     }
 
     for (const roomName of activeRooms) {
       if (!nextRooms.has(roomName)) {
-        hooks.onConsoleMessage?.(`Exited ${roomName}`);
+        store.logInfo(`Exited ${roomName}`);
       }
     }
 
     activeRooms = nextRooms;
-    if (roomsChanged) {
-      hooks.onPlayerRooms?.(Array.from(nextRooms).sort());
+    if (roomsChanged && currentLocalNpub) {
+      store.dispatch({
+        type: "set-local-rooms",
+        rooms: Array.from(nextRooms).sort(),
+      });
     }
   };
 
   clampToMap();
   updateFootBounds();
   updateRooms();
-  reportPosition();
+  reportPosition(true);
 
   const moveAxis = (delta: number, axis: "x" | "y") => {
     if (delta === 0) {
@@ -555,7 +604,12 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     target: Sprite,
     facingDir: FacingDirection,
   ) => {
-    if (!hooks.onHeadPosition || !app.renderer) {
+    if (!app.renderer) {
+      return;
+    }
+
+    const identity = id === "local" ? currentLocalNpub : id;
+    if (!identity) {
       return;
     }
 
@@ -565,19 +619,22 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
     const cssScaleY = (canvas.clientHeight || canvas.height) / canvas.height;
     const headOffset = facingDir === 0 ? -8 : facingDir === 1 ? 8 : 0;
 
-    hooks.onHeadPosition(id, {
-      x: (bounds.x + headOffset) * cssScaleX,
-      y: bounds.y * cssScaleY,
-      width: bounds.width * cssScaleX,
-      height: bounds.height * cssScaleY,
-    }, facingDir);
+    store.updateHeadBounds(identity, {
+      rect: {
+        x: (bounds.x + headOffset) * cssScaleX,
+        y: bounds.y * cssScaleY,
+        width: bounds.width * cssScaleX,
+        height: bounds.height * cssScaleY,
+      },
+      facing: facingDir,
+    });
   };
 
   const emitHeadPosition = () => {
     emitHeadPositionFor("local", headSprite, lastFacing);
   };
 
-  const syncPlayers = (states: PlayerState[]) => {
+  const syncPlayers = (states: LegacyPlayerState[]) => {
     const seen = new Set<string>();
 
     for (const state of states) {
@@ -588,7 +645,7 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
 
     for (const [npub, managed] of remotePlayers) {
       if (!seen.has(npub)) {
-        hooks.onHeadPosition?.(npub, null, managed.lastFacing ?? 1);
+        store.updateHeadBounds(npub, null);
         managed.container.destroy({ children: true });
         remotePlayers.delete(npub);
       }
@@ -720,41 +777,98 @@ export async function initGame(app: Application, hooks: GameHooks = {}): Promise
       avatarAssetUrl = undefined;
     }
     pressed.clear();
-    for (const [, managed] of remotePlayers) {
+    for (const [npub, managed] of remotePlayers) {
+      store.updateHeadBounds(npub, null);
       managed.container.destroy({ children: true });
     }
     remotePlayers.clear();
-    hooks.onHeadPosition?.("local", null, lastFacing);
-    hooks.onPlayerRooms?.([]);
+
+    if (currentLocalNpub) {
+      store.updateHeadBounds(currentLocalNpub, null);
+    }
+    store.dispatch({ type: "set-local-rooms", rooms: [] });
+
+    for (const subscription of subscriptions) {
+      subscription.unsubscribe();
+    }
+    subscriptions.length = 0;
+    currentLocalNpub = null;
   };
 
-  const setInputCaptured = (captured: boolean) => {
-    if (inputCaptured === captured) {
-      return;
-    }
-
-    inputCaptured = captured;
-    if (captured) {
-      pressed.clear();
-    }
-  };
-
-  const spawn = () => {
+  const spawnPlayer = () => {
     player.x = spawnX;
     player.y = spawnY;
     clampToMap();
     updateFootBounds();
     updateRooms();
-    reportPosition();
+    reportPosition(true);
     emitHeadPosition();
   };
 
+  const remotePlayersSubscription = store.remotePlayers$.subscribe(remoteMap => {
+    const states = Array.from(remoteMap.values(), toLegacyState);
+    syncPlayers(states);
+  });
+  subscriptions.push(remotePlayersSubscription);
+
+  const localPlayerSubscription = store.localPlayer$.subscribe(playerState => {
+    const previousNpub = currentLocalNpub;
+    currentLocalNpub = playerState?.npub ?? null;
+    const avatar = playerState?.avatarUrl ?? null;
+    if (avatar !== currentAvatarUrl) {
+      currentAvatarUrl = avatar;
+      setAvatar(avatar);
+    }
+    if (!playerState && previousNpub) {
+      store.updateHeadBounds(previousNpub, null);
+    }
+  });
+  subscriptions.push(localPlayerSubscription);
+
+  const settingsSubscription = store.settings$.subscribe(settings => {
+    if (inputCaptured === settings.inputCaptured) {
+      return;
+    }
+    inputCaptured = settings.inputCaptured;
+    if (inputCaptured) {
+      pressed.clear();
+    }
+  });
+  subscriptions.push(settingsSubscription);
+
+  const commandSubscription = store.commands$.subscribe(command => {
+    switch (command.type) {
+      case "login":
+        currentLocalNpub = command.npub;
+        reportPosition(true);
+        updateRooms();
+        break;
+      case "logout":
+        currentLocalNpub = null;
+        pressed.clear();
+        reportPosition(true);
+        break;
+      case "request-spawn":
+        spawnPlayer();
+        break;
+      default:
+        break;
+    }
+  });
+  subscriptions.push(commandSubscription);
+
+  // Initial sync with store state
+  const snapshot = store.getSnapshot();
+  syncPlayers(Array.from(snapshot.remotePlayers.values(), toLegacyState));
+  if (snapshot.localPlayer?.avatarUrl) {
+    currentAvatarUrl = snapshot.localPlayer.avatarUrl;
+    setAvatar(snapshot.localPlayer.avatarUrl);
+  } else {
+    setAvatar(null);
+  }
+
   return {
     destroy,
-    setInputCaptured,
-    spawn,
-    setAvatar,
-    syncPlayers,
   };
 }
 

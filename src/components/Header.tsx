@@ -1,45 +1,25 @@
 import { getDisplayName } from "applesauce-core/helpers";
-import { createMemo, Show, type Component, from } from "solid-js";
-import { npubEncode } from "nostr-tools/nip19";
-import {
-  getAudioState,
-  getProfilePictureUrl,
-  setMicrophoneEnabled,
-  setSpeakerEnabled,
-  type AudioControlState,
-  type PlayerProfile
-} from "../multiplayer/stream";
-import { manager } from "../nostr/accounts";
-import { eventStore } from "../nostr/client";
+import { createMemo, Show, type Component } from "solid-js";
+
+import { getProfilePictureUrl, setMicEnabled, setSpeakerEnabled } from "../game/service";
+import type { AudioState, PlayerProfileEntry } from "../game/state";
 
 export interface HeaderProps {
-  profileMap: Map<string, PlayerProfile>;
-  audioState: AudioControlState;
+  pubkey: string | null;
+  npub: string | null;
+  localAlias: string | null;
+  profileMap: ReadonlyMap<string, PlayerProfileEntry>;
+  audioState: AudioState;
   onLogout: () => void;
 }
 
 export const Header: Component<HeaderProps> = (props) => {
-  const activeAccount = from(manager.active$);
-
-  const pubkey = createMemo(() => activeAccount()?.pubkey || null);
-  const npub = createMemo(() => {
-    const pk = pubkey();
-    return pk ? npubEncode(pk) : null;
-  });
-
-  const profile = createMemo(() => {
-    const pk = pubkey();
-    if (!pk) return null;
-    const profileEvent = eventStore.profile(pk);
-    return from(profileEvent)();
-  });
-
   const handleToggleMic = async () => {
     if (!props.audioState.supported) {
       return;
     }
     try {
-      await setMicrophoneEnabled(!props.audioState.micEnabled);
+      await setMicEnabled(!props.audioState.micEnabled);
     } catch (error) {
       console.error("Failed to toggle microphone", error);
     }
@@ -49,12 +29,22 @@ export const Header: Component<HeaderProps> = (props) => {
     setSpeakerEnabled(!props.audioState.speakerEnabled);
   };
 
+  const localProfile = createMemo(() => {
+    const pk = props.pubkey;
+    return pk ? props.profileMap.get(pk)?.profile : undefined;
+  });
+
   const displayName = createMemo(() => {
-    const p = profile();
-    if (p) {
-      return getDisplayName(p);
+    if (props.localAlias) {
+      return props.localAlias;
     }
-    const currentNpub = npub();
+
+    const profile = localProfile();
+    const name = profile ? getDisplayName(profile) : null;
+    if (name) {
+      return name;
+    }
+    const currentNpub = props.npub;
     if (currentNpub) {
       return `${currentNpub.slice(0, 12)}…`;
     }
@@ -62,21 +52,17 @@ export const Header: Component<HeaderProps> = (props) => {
   });
 
   const avatarUrl = createMemo(() => {
-    const p = profile();
-    const pk = pubkey();
-    if (p?.picture) {
-      return p.picture;
+    const pk = props.pubkey;
+    if (!pk) {
+      return null;
     }
-    if (pk) {
-      return getProfilePictureUrl(pk) ?? `https://robohash.org/${pk}.png`;
-    }
-    return null;
+    return getProfilePictureUrl(pk) ?? null;
   });
 
   return (
     <header class="status-bar">
       <Show
-        when={pubkey()}
+        when={props.pubkey}
         fallback={
           <div class="status-strip status-strip--placeholder">Sign in to explore the InnPub.</div>
         }
@@ -91,8 +77,8 @@ export const Header: Component<HeaderProps> = (props) => {
             </Show>
             <div class="status-strip__meta">
               <span class="status-strip__label">Logged in</span>
-              <span class="status-strip__name" title={npub() ?? undefined}>
-                {displayName() ?? (npub() ? `${npub()!.slice(0, 12)}…` : "Guest")}
+              <span class="status-strip__name" title={props.npub ?? undefined}>
+                {displayName() ?? (props.npub ? `${props.npub.slice(0, 12)}…` : "Guest")}
               </span>
             </div>
           </div>
@@ -124,3 +110,4 @@ export const Header: Component<HeaderProps> = (props) => {
     </header>
   );
 };
+
