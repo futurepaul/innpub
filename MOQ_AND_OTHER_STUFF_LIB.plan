@@ -1,0 +1,83 @@
+# MOQ & Other Stuff Library Plan
+
+## Goal
+Replace the `@kixelated/hang` dependency with a local, minimal TypeScript library that preserves the exact publish/watch behaviour we rely on (room discovery, audio capture/encode, audio subscribe/decode/playback, speaking hints) while stripping out Hang’s optional surface area (preview, video, chat, captions, WASM polyfills, transformers).
+
+## Current Usage Snapshot
+- Import surface today: `Hang.Publish.Broadcast`, `Hang.Watch.Broadcast`, `Hang.Watch.Audio.Emitter`, `Hang.Watch.Audio.Source` (indirect via `broadcast.audio`), and `HangRoom` from `@kixelated/hang/meet`.
+- Required signals: publish side toggles (`audio.enabled`, `audio.source`, `audio.speaking.active`), watch side toggles (`broadcast.enabled`, `broadcast.audio.enabled`, `broadcast.audio.speaking.active`).
+- Worklets: capture worklet (`publish/audio/capture-worklet.ts`) and render worklet + ring buffer (`watch/audio/render-worklet.ts`, `watch/audio/ring-buffer.ts`).
+- `Frame.Producer` / `Frame.Consumer` helpers, `catalog.json` handshake, and MoQ track naming conventions (`audio/data`, `audio/speaking.bool`).
+
+## Implementation Phases
+1. **Bootstrap library skeleton**
+   - Create `libs/moq-and-other-stuff/package.json` (type module, files in `src/`), `tsconfig.json`, and `src/index.ts` exporting `Publish`, `Watch`, `Meet`, `Frame`, `Time` namespaces mirroring Hang’s entry point.
+   - Configure Vite path/alias so `import * as Hang from "moq-and-other-stuff";` (or scoped alias we settle on) works in the app and supports bundling workers via `?worker&url`.
+   - Ensure library sources stay framework-agnostic and only depend on `@kixelated/moq` and `@kixelated/signals`.
+
+2. **Publish path (audio-only)**
+   - Copy and trim Hang sources:
+     - `publish/broadcast.ts` → strip video/chat/location/user/preview handling; keep catalog + audio.
+     - `publish/audio/encoder.ts`, `publish/audio/capture-worklet.ts`, `publish/audio/capture.ts`, `publish/audio/types.ts`.
+     - `publish/audio/speaking.ts` but replace heavy VAD path with lightweight RMS/running-peak heuristic in a bespoke worker (new `publish/audio/speaking-worker.ts`) that reuses the capture worklet without huggingface/transformers.
+   - Replace references to removed modules with no-ops or compile-time exclusions (e.g. `Catalog.encode` should only build audio + speaking entries).
+   - Implement a stub `util/libav.ts` that simply resolves when native `AudioEncoder`/`AudioDecoder` exist, and logs a clear error if they don’t (dropping the libav wasm dependency).
+
+3. **Watch path (audio-only)**
+   - Copy and trim:
+     - `watch/broadcast.ts` → keep catalog download + audio + speaking; remove video/chat/location/detection/preview/user branches.
+     - `watch/audio/source.ts`, `watch/audio/emitter.ts`, `watch/audio/render-worklet.ts`, `watch/audio/render.ts`, `watch/audio/ring-buffer.ts`, `watch/audio/speaking.ts`.
+   - Update imports to point at our slimmed catalog/frame/time/util modules.
+   - Ensure `Watch.Audio.Source` surfaces the same `enabled`, `root`, `speaking.active`, etc. used by the app, honoring the `PRIORITY` constants we copy (`watch/priority.ts`).
+
+4. **Shared utilities**
+   - Copy `frame.ts` intact (minus unused branches if any), `time.ts`, `util/hex.ts`, `watch/priority.ts`, and the relevant catalog pieces:
+     - `catalog/root.ts`, `catalog/audio/index.ts`, `catalog/audio/speaking.ts`, `catalog/track.ts`, `catalog/integers.ts`.
+   - Adjust schemas to remove references to video/chat/etc so zod stays lightweight (or drop zod entirely and validate manually if we want to shed that dependency—decision pending).
+   - Provide a tiny `catalog/audio/captions.ts` stub if required by typings, else remove captions altogether.
+
+5. **Meet helper**
+   - Copy `meet/room.ts` and prune unused surfaces (video preview references) so room discovery continues to work with the new namespaces.
+
+6. **Integration & migration**
+   - Wire the app to import from the new package name (`import * as Hang from "moq-and-other-stuff";`, `import { Room as HangRoom } from "moq-and-other-stuff/meet";`).
+   - Update `package.json` dependency graph to prefer the local library (e.g. `"moq-and-other-stuff": "file:./libs/moq-and-other-stuff"`) and remove `@kixelated/hang`.
+   - Adjust `vite.config.ts` `optimizeDeps.exclude` / `ssr.noExternal` to reference the new module instead of `@kixelated/hang`.
+   - Validate capture/playback in dev (publish + subscribe between two browsers) and confirm speaking indicator + mute logic still fire.
+   - Once stable, prune unused `bun.lock` entries and ensure tree-shaking works.
+
+## Files/Modules earmarked for direct copy (with edits noted)
+- `/tmp/kixelated-moq/js/hang/src/publish/audio/capture-worklet.ts` → verbatim.
+- `/tmp/kixelated-moq/js/hang/src/watch/audio/render-worklet.ts` → verbatim.
+- `/tmp/kixelated-moq/js/hang/src/watch/audio/ring-buffer.ts` → verbatim.
+- `/tmp/kixelated-moq/js/hang/src/watch/audio/render.ts` → verbatim.
+- `/tmp/kixelated-moq/js/hang/src/frame.ts` → verbatim (may remove unused helper exports if any).
+- `/tmp/kixelated-moq/js/hang/src/time.ts` → verbatim.
+- `/tmp/kixelated-moq/js/hang/src/watch/priority.ts` → verbatim.
+- `/tmp/kixelated-moq/js/hang/src/util/hex.ts` → verbatim.
+- `/tmp/kixelated-moq/js/hang/src/meet/room.ts` → copy then prune preview/video references if any remain after trimming.
+
+## Files to adapt (copy-then-trim)
+- `publish/broadcast.ts` – remove non-audio signals, keep catalog + audio.
+- `publish/audio/encoder.ts` – remove libav polyfill requirement, drop captions support, wire new speaking worker.
+- `publish/audio/speaking.ts` – rewrite worker invocation, update catalog writing.
+- `publish/audio/speaking-worker.ts` – brand-new lightweight implementation (RMS threshold, windowed average, etc.).
+- `watch/broadcast.ts` – strip video/chat/detection/location handling.
+- `watch/audio/source.ts` – ensure dependency on trimmed catalog + stubbed libav helper.
+- `watch/audio/speaking.ts` – minimal adjustments if catalog shape changes.
+- `catalog/root.ts` & `catalog/audio/index.ts` – slim schema to audio-only (may eliminate zod dependency if we hand-roll validation).
+- `catalog/integers.ts`, `catalog/track.ts` – keep as-is unless we drop zod (then reimplement simple runtime asserts).
+- `publish/audio/types.ts` – keep as-is (already minimal).
+
+## Potential Simplifications / Drops
+- Remove the huggingface VAD + wasm stack entirely.
+- Drop libav polyfill and log a warning if WebCodecs is missing (require Chromium/Firefox with WebCodecs).
+- Skip catalog fields for captions/chat/video/location/user, reducing payload size.
+- Avoid `zod` runtime dependency by swapping to lightweight manual validation if bundle size matters (TBD).
+
+## Decisions / Answers
+1. ✅ Require native WebCodecs; Safari support can wait, so the libav polyfill stays removed.
+2. ✅ Simple boolean RMS speaking detector is acceptable (leave comments for future upgrades).
+3. ✅ Package name is plain `moq-and-other-stuff` for now.
+4. ✅ Keep data/chat helpers in app code for now; revisit once audio port is stable.
+5. ✅ Acknowledge Hang in the README and keep the library dual-licensed MIT/Apache-2.0.

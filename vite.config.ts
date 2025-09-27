@@ -25,9 +25,9 @@ export default defineConfig({
     headers: CROSS_ORIGIN_HEADERS,
   },
   optimizeDeps: {
-    exclude: ["@kixelated/hang"],
+    exclude: ["moq-and-other-stuff"],
   },
   ssr: {
-    noExternal: ["@kixelated/hang"],
+    noExternal: ["moq-and-other-stuff"],
   },
 });
