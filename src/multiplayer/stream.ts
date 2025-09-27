@@ -1225,10 +1225,20 @@ function trackProfile(npub: string) {
       if (localIdentity && localIdentity === npub) {
         const picture = profile ? getProfilePicture(profile) : null;
         localAvatarUrlValue = picture ?? null;
-        if (picture) {
-          gameStore.patchLocalPlayer({ avatarUrl: picture });
-        } else {
-          gameStore.patchLocalPlayer({ avatarUrl: null });
+        console.debug("local profile updated", {
+          npub,
+          hasProfile: Boolean(profile),
+          picture,
+          pendingLocalIdentity,
+        });
+        const snapshot = gameStore.getSnapshot();
+        const existingAvatar = snapshot.localPlayer?.avatarUrl ?? null;
+        if (existingAvatar !== (picture ?? null)) {
+          console.debug("patching local avatar from profile", {
+            previous: existingAvatar,
+            next: picture ?? null,
+          });
+          gameStore.patchLocalPlayer({ avatarUrl: picture ?? null });
         }
       }
     });
