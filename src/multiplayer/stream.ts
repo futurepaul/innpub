@@ -240,6 +240,10 @@ function handleLoginCommand(npub: string, alias: string | null): void {
   pendingLocalIdentity = normalized;
   localAliasValue = alias;
 
+  if (normalized) {
+    trackProfile(normalized);
+  }
+
   const snapshot = gameStore.getSnapshot();
   if (snapshot.localPlayer && snapshot.localPlayer.npub === normalized) {
     gameStore.patchLocalPlayer({ alias: localAliasValue });
