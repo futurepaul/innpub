@@ -28,7 +28,12 @@ import {
   startGameServices,
   stopGameServices,
 } from "./game/service";
-import { type AudioState, type ChatEntry, type PlayerProfileEntry } from "./game/state";
+import {
+  type AudioState,
+  type ChatEntry,
+  type PlayerProfileEntry,
+  type RemotePlayerState,
+} from "./game/state";
 
 export const App: Component = () => {
   let containerRef: HTMLDivElement | undefined;
@@ -49,6 +54,7 @@ export const App: Component = () => {
   const profileMap = createObservableSignal<ReadonlyMap<string, PlayerProfileEntry>>(gameStore.profiles$, gameStore.getSnapshot().profiles);
   const logsSignal = createObservableSignal(gameStore.logs$, gameStore.getSnapshot().logs);
   const localPlayerSignal = createObservableSignal(gameStore.localPlayer$, gameStore.getSnapshot().localPlayer);
+  const remotePlayers = createObservableSignal<ReadonlyMap<string, RemotePlayerState>>(gameStore.remotePlayers$, gameStore.getSnapshot().remotePlayers);
 
   const logMessages = createMemo(() => logsSignal().map(entry => entry.message));
 
@@ -156,7 +162,9 @@ export const App: Component = () => {
 
     const parent = containerRef.parentElement as HTMLElement | null;
     const availableWidth = parent ? parent.clientWidth : window.innerWidth;
-    const maxHeight = Math.max(240, window.innerHeight * 0.6);
+    const pointerFine = window.matchMedia?.("(pointer: fine)").matches ?? false;
+    const heightRatio = pointerFine ? 0.88 : 0.9;
+    const maxHeight = Math.max(240, window.innerHeight * heightRatio);
 
     let targetWidth = availableWidth;
     let targetHeight = targetWidth / desiredAspect;
@@ -248,15 +256,16 @@ export const App: Component = () => {
         <div class="game-container">
           <div class="game-surface" ref={containerRef}>
           </div>
+          <div class="game-console-overlay">
+            <Console
+              isLoggedIn={!showLoginOverlay()}
+              logMessages={logMessages()}
+              onAppendLog={message => gameStore.logInfo(message)}
+              onSetInputCaptured={captured => gameStore.dispatch({ type: "set-input-captured", captured })}
+              onSpawn={requestSpawn}
+            />
+          </div>
         </div>
-
-        <Console
-          isLoggedIn={!showLoginOverlay()}
-          logMessages={logMessages()}
-          onAppendLog={message => gameStore.logInfo(message)}
-          onSetInputCaptured={captured => gameStore.dispatch({ type: "set-input-captured", captured })}
-          onSpawn={requestSpawn}
-        />
       </div>
 
       <div class="app-sidebar">

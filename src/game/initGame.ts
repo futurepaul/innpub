@@ -285,6 +285,9 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
     slot.container.x = playerWidth / 2 + offset;
   };
 
+  const TRANSFORM_HEARTBEAT_MS = 1000;
+  let lastTransformHeartbeat = 0;
+
   const createPlayerContainer = () => {
     const container = new Container();
     container.eventMode = "none";
@@ -621,6 +624,7 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
   const reportPosition = (force = false) => {
     if (!currentLocalNpub) {
       lastReportedTransform = null;
+      lastTransformHeartbeat = 0;
       return;
     }
 
@@ -630,6 +634,9 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
       facing: lastFacing,
     } as const;
 
+    const nowMs = Date.now();
+    const heartbeatDue = nowMs - lastTransformHeartbeat >= TRANSFORM_HEARTBEAT_MS;
+
     const changed =
       !lastReportedTransform ||
       force ||
@@ -637,11 +644,14 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
       lastReportedTransform.y !== next.y ||
       lastReportedTransform.facing !== next.facing;
 
-    if (!changed) {
+    if (!changed && !heartbeatDue) {
       return;
     }
 
     lastReportedTransform = { ...next };
+    if (changed || heartbeatDue) {
+      lastTransformHeartbeat = nowMs;
+    }
 
     store.dispatch({
       type: "set-local-transform",

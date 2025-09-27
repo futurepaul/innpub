@@ -74,7 +74,12 @@ export const Header: Component<HeaderProps> = (props) => {
         fallback={<div class="status-strip status-strip--placeholder">Sign in to explore the InnPub.</div>}
       >
         <div class="status-strip">
-          <div class="status-strip__identity">
+          <button
+            type="button"
+            class="status-strip__identity"
+            onClick={props.onLogout}
+            title="Tap to log out"
+          >
             <Show
               when={avatarUrl()}
               fallback={<div class="status-strip__avatar status-strip__avatar--placeholder" />}
@@ -87,7 +92,7 @@ export const Header: Component<HeaderProps> = (props) => {
                 {displayName() ?? (props.npub ? `${props.npub.slice(0, 12)}…` : "Guest")}
               </span>
             </div>
-          </div>
+          </button>
           <div class="status-strip__controls">
             <button
               type="button"
@@ -106,9 +111,6 @@ export const Header: Component<HeaderProps> = (props) => {
             </button>
             <button type="button" class="status-strip__btn" onClick={props.onTogglePlayersDrawer}>
               Players
-            </button>
-            <button type="button" class="status-strip__btn status-strip__btn--ghost" onClick={props.onLogout}>
-              Logout
             </button>
           </div>
           <Show when={props.audioState.micError}>

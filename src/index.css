@@ -104,6 +104,14 @@ body {
 
 .status-strip__identity {
   display: contents;
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
 }
 
 .status-strip__avatar {
@@ -194,9 +202,11 @@ body {
 }
 
 .game-container {
+  position: relative;
   width: 100%;
   display: flex;
   justify-content: center;
+  align-items: center;
 }
 
 .game-surface {
@@ -207,6 +217,27 @@ body {
   margin: 0 auto;
   width: fit-content;
   max-width: 100%;
+}
+
+.game-console-overlay {
+  position: absolute;
+  left: 50%;
+  bottom: clamp(16px, 6vh, 36px);
+  transform: translateX(-50%);
+  display: flex;
+  justify-content: center;
+  width: min(720px, calc(100% - 48px));
+  pointer-events: none;
+}
+
+.game-console-overlay .console-region {
+  width: 100%;
+  min-height: 84px;
+  background: rgba(18, 28, 46, 0.92);
+  border-color: rgba(152, 188, 255, 0.45);
+  box-shadow: 0 18px 42px rgba(9, 14, 28, 0.55);
+  pointer-events: auto;
+  backdrop-filter: blur(8px);
 }
 
 .game-canvas {
@@ -274,6 +305,84 @@ body {
 @media (pointer: fine) {
   .dpad {
     display: none;
+  }
+}
+
+@media (max-width: 960px) {
+  .game-container {
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .game-surface {
+    width: 100%;
+  }
+
+  .status-strip {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    padding: 12px;
+  }
+
+  .status-strip__identity {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+  }
+
+  .status-strip__meta {
+    align-items: flex-start;
+  }
+
+  .status-strip__controls {
+    width: 100%;
+    justify-content: center;
+    gap: 8px;
+    flex-wrap: nowrap;
+  }
+
+  .status-strip__btn {
+    flex: 1 1 0;
+    text-align: center;
+  }
+
+  .game-console-overlay {
+    position: static;
+    transform: none;
+    width: 100%;
+    pointer-events: auto;
+    margin-top: 12px;
+    bottom: auto;
+  }
+
+  .game-console-overlay .console-region {
+    max-width: none;
+    backdrop-filter: none;
+    min-height: auto;
+  }
+}
+
+@media (max-width: 600px) {
+  .game-console-overlay {
+    align-self: stretch;
+    margin-top: 8px;
+  }
+
+  .game-console-overlay .console-region {
+    padding: 12px 14px;
+  }
+
+  .status-strip__controls {
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .status-strip__btn {
+    flex: 1 1 100%;
   }
 }
 
