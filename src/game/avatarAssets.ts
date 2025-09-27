@@ -3,6 +3,8 @@ import { Assets, SCALE_MODES, Sprite, Texture } from "pixi.js";
 export interface AvatarDisplayInstance {
   url: string;
   display: Sprite;
+  managedKey: string | null;
+  ownsTexture: boolean;
 }
 
 interface CachedAvatar {
@@ -75,19 +77,26 @@ async function loadSprite(url: string): Promise<AvatarDisplayInstance> {
   });
 
   let texture: Texture | null = null;
+  let managedKey: string | null = null;
+  let ownsTexture = false;
+
   if (!sanitized.startsWith("data:")) {
     try {
       const canvasUrl = canvasKeyFromImage(image, sanitized);
       if (canvasUrl) {
+        managedKey = canvasUrl;
         texture = await Assets.load<Texture>(canvasUrl);
       }
     } catch {
       texture = null;
+      managedKey = null;
     }
   }
 
   if (!texture) {
     texture = Texture.from(image);
+    ownsTexture = true;
+    managedKey = null;
   }
 
   if (texture.source?.style) {
@@ -99,7 +108,7 @@ async function loadSprite(url: string): Promise<AvatarDisplayInstance> {
   sprite.anchor.set(0.5, 0);
   sprite.roundPixels = true;
 
-  return { url: sanitized, display: sprite };
+  return { url: sanitized, display: sprite, managedKey, ownsTexture };
 }
 
 export async function createAvatarDisplay(url: string): Promise<AvatarDisplayInstance> {
@@ -117,6 +126,8 @@ export async function createAvatarDisplay(url: string): Promise<AvatarDisplayIns
   const promise = loadSprite(sanitized).then(instance => ({
     url: instance.url,
     display: instance.display,
+    managedKey: instance.managedKey,
+    ownsTexture: instance.ownsTexture,
   }));
 
   avatarCache.set(sanitized, { promise, refCount: 1 });
@@ -132,7 +143,11 @@ export function destroyAvatarDisplay(instance: AvatarDisplayInstance | null | un
   const cached = avatarCache.get(sanitized);
   if (!cached) {
     try {
-      instance.display.destroy({ children: true, texture: true, baseTexture: true });
+      instance.display.destroy({
+        children: true,
+        texture: instance.ownsTexture,
+        baseTexture: instance.ownsTexture,
+      });
     } catch {
       /* ignore */
     }
@@ -146,10 +161,16 @@ export function destroyAvatarDisplay(instance: AvatarDisplayInstance | null | un
 
   avatarCache.delete(sanitized);
   try {
-    instance.display.destroy({ children: true, texture: true, baseTexture: true });
+    instance.display.destroy({
+      children: true,
+      texture: instance.ownsTexture,
+      baseTexture: instance.ownsTexture,
+    });
   } catch {
     /* ignore */
   }
-  void Assets.unload(sanitized).catch(() => undefined);
+  if (instance.managedKey) {
+    void Assets.unload(instance.managedKey).catch(() => undefined);
+  }
   canvasCache.delete(sanitized);
 }
