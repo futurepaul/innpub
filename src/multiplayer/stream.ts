@@ -1253,9 +1253,6 @@ function subscribeToRemote(path: Moq.Path.Valid) {
       if (!state) {
         continue;
       }
-      if (!state) {
-        continue;
-      }
       if (state.npub && localState?.npub && state.npub === localState.npub) {
         unsubscribeFromRemote(path);
         return;
@@ -1269,7 +1266,6 @@ function subscribeToRemote(path: Moq.Path.Valid) {
       } else if (state.rooms && state.rooms.length > 0) {
         setRooms(state.npub, state.rooms);
       }
-    }
     }
   })()
     .catch(error => {
@@ -1339,9 +1335,7 @@ function subscribeToRemote(path: Moq.Path.Valid) {
     (async () => {
       for (;;) {
         const frame = await chatConsumer.decode();
-        if (!frame) {
-          break;
-        }
+        if (!frame) break;
         let parsed: { npub: string; message: string; ts: number; id: string } | undefined;
         try {
           parsed = parseChatPayload(JSON.parse(textDecoder.decode(frame.data)));
@@ -1349,9 +1343,7 @@ function subscribeToRemote(path: Moq.Path.Valid) {
           console.warn("failed to decode chat payload", error);
           continue;
         }
-        if (!parsed) {
-          continue;
-        }
+        if (!parsed) continue;
         const expiresAt = Math.max(parsed.ts, Date.now()) + CHAT_TTL_MS;
         const entry: ChatMessage = {
           npub: parsed.npub,
