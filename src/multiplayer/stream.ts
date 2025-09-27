@@ -92,6 +92,8 @@ const profileSubscriptions = new Map<string, { unsubscribe: () => void }>();
 const speakingLevels = new Map<string, number>();
 const roomsByNpub = new Map<string, string[]>();
 const chatMessages = new Map<string, ChatMessage>();
+let chatSessionEpoch = Date.now();
+const textDecoder = new TextDecoder();
 
 const remoteSubscriptions = new Map<string, RemoteSubscription>();
 const stateSubscribers = new Set<Moq.Track>();
@@ -902,6 +904,9 @@ function notifyChats() {
 }
 
 function setChatEntry(entry: ChatMessage) {
+  if (entry.ts < chatSessionEpoch) {
+    return;
+  }
   chatMessages.set(entry.npub, entry);
   notifyChats();
 }
@@ -1230,18 +1235,24 @@ function subscribeToRemote(path: Moq.Path.Valid) {
       }
     });
 
+  const stateConsumer = new Hang.Frame.Consumer(stateTrack);
   (async () => {
     for (;;) {
-      const payload = await stateTrack.readJson();
-      if (!payload) {
+      const frame = await stateConsumer.decode();
+      if (!frame) {
         break;
       }
-      const state = parseRemoteState(payload);
+      let state: PlayerState | null = null;
+      try {
+        state = parseRemoteState(JSON.parse(textDecoder.decode(frame.data)));
+      } catch (error) {
+        console.warn("failed to decode remote state", error);
+        continue;
+      }
       if (!state) {
         continue;
       }
       if (state.npub && localState?.npub && state.npub === localState.npub) {
-        // Ignore our own mirrored state to avoid audio feedback.
         unsubscribeFromRemote(path);
         return;
       }
@@ -1255,14 +1266,16 @@ function subscribeToRemote(path: Moq.Path.Valid) {
         setRooms(state.npub, state.rooms);
       }
     }
-  })().catch(error => {
-    if (!isResetStreamError(error)) {
-      console.warn(`remote subscription failed for ${path}`, error);
-    } else {
-      logTrackSubscribeFailure(path, STATE_TRACK, error);
-    }
-    scheduleResubscribe(path);
-  });
+  })()
+    .catch(error => {
+      if (!isResetStreamError(error)) {
+        console.warn(`remote subscription failed for ${path}`, error);
+      } else {
+        logTrackSubscribeFailure(path, STATE_TRACK, error);
+      }
+      scheduleResubscribe(path);
+    })
+    .finally(() => stateConsumer.close());
 
   try {
     const roomsTrack = broadcast.subscribe(ROOMS_TRACK, 0);
@@ -1317,13 +1330,20 @@ function subscribeToRemote(path: Moq.Path.Valid) {
         }
       });
 
+    const chatConsumer = new Hang.Frame.Consumer(chatTrack);
     (async () => {
       for (;;) {
-        const payload = await chatTrack.readJson();
-        if (!payload) {
+        const frame = await chatConsumer.decode();
+        if (!frame) {
           break;
         }
-        const parsed = parseChatPayload(payload);
+        let parsed: { npub: string; message: string; ts: number; id: string } | undefined;
+        try {
+          parsed = parseChatPayload(JSON.parse(textDecoder.decode(frame.data)));
+        } catch (error) {
+          console.warn("failed to decode chat payload", error);
+          continue;
+        }
         if (!parsed) {
           continue;
         }
@@ -1338,10 +1358,12 @@ function subscribeToRemote(path: Moq.Path.Valid) {
         setChatEntry(entry);
         trackProfile(parsed.npub);
       }
-  })().catch(error => {
-    logTrackSubscribeFailure(path, CHAT_TRACK, error);
-    scheduleResubscribe(path);
-  });
+    })()
+      .catch(error => {
+        logTrackSubscribeFailure(path, CHAT_TRACK, error);
+        scheduleResubscribe(path);
+      })
+      .finally(() => chatConsumer.close());
   } catch (error) {
     logTrackSubscribeFailure(path, CHAT_TRACK, error);
     scheduleResubscribe(path);
@@ -1613,6 +1635,14 @@ export function stopStream() {
   void stopMicrophoneCapture(true);
   handleDisconnected();
   void shutdownConnection();
+}
+
+export function resetChatSession(epoch: number = Date.now()): void {
+  chatSessionEpoch = epoch;
+  if (chatMessages.size > 0) {
+    chatMessages.clear();
+    notifyChats();
+  }
 }
 
 export function updateLocalPlayer(state: PlayerState) {

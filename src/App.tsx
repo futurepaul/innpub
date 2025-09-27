@@ -7,7 +7,6 @@ import { Application } from "pixi.js";
 import { ExtensionSigner } from "applesauce-signers";
 import { getDisplayName } from "applesauce-core/helpers";
 import { decode as decodeNip19, npubEncode } from "nostr-tools/nip19";
-import { generateSecretKey, getPublicKey } from "nostr-tools";
 import {
   startStream,
   stopStream,
@@ -28,6 +27,7 @@ import {
   subscribeChats,
   sendChatMessage,
   type ChatMessage,
+  resetChatSession,
 } from "./multiplayer/stream";
 
 type DirectionKey = "up" | "down" | "left" | "right";
@@ -63,7 +63,6 @@ export function App() {
   const [headRects, setHeadRects] = useState<Map<string, { rect: { x: number; y: number; width: number; height: number }; facing: FacingDirection }>>(new Map());
   const [audioState, setAudioState] = useState<AudioControlState>(() => getAudioState());
   const [chatMap, setChatMap] = useState<Map<string, ChatMessage>>(new Map());
-  const [guestNameInput, setGuestNameInput] = useState("");
   const [consoleFocusReason, setConsoleFocusReason] = useState<"keyboard" | "pointer" | null>(null);
   const consoleOpen = inputMode !== null;
   const profileMapRef = useRef<Map<string, PlayerProfile>>(new Map());
@@ -152,13 +151,16 @@ export function App() {
     (hex: string, alias?: string) => {
       const normalized = hex.toLowerCase();
       const encoded = npubEncode(normalized);
+      const epoch = Date.now();
+      resetChatSession(epoch);
+      chatSeenRef.current.clear();
+      setChatMap(new Map());
       pubkeyRef.current = normalized;
       setPubkey(normalized);
       setNpub(encoded);
       setLocalAlias(alias ?? null);
       setLoginError(null);
       setNpubInputValue("");
-      setGuestNameInput("");
       appendLog(alias ? `Joined as ${alias} (${encoded})` : `Logged in as ${encoded}`);
       gameInstanceRef.current?.spawn();
     },
@@ -274,6 +276,8 @@ export function App() {
       container.style.maxWidth = "100%";
 
       app.renderer.resize(targetWidth, targetHeight);
+      app.canvas.style.width = `${targetWidth}px`;
+      app.canvas.style.height = `${targetHeight}px`;
     };
 
     app
@@ -447,21 +451,21 @@ export function App() {
       const mode = inputMode;
       const trimmed = consoleInput.trim();
 
-      if (mode === "chat") {
-        if (trimmed.length > 0) {
-          try {
-            await sendChatMessage(trimmed);
-          } catch (error) {
-            const message = error instanceof Error ? error.message : "Failed to send chat";
-            appendLog(`[Chat] ${message}`);
-          }
-        }
-      } else if (mode === "command") {
-        if (trimmed.length > 0 && trimmed !== "/") {
+      const isCommand = trimmed.startsWith("/");
+
+      if (isCommand) {
+        if (trimmed !== "/") {
           appendLog(`> ${trimmed}`);
           if (trimmed === "/spawn") {
             gameInstanceRef.current?.spawn();
           }
+        }
+      } else if (trimmed.length > 0) {
+        try {
+          await sendChatMessage(trimmed);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Failed to send chat";
+          appendLog(`[Chat] ${message}`);
         }
       }
 
@@ -501,26 +505,6 @@ export function App() {
     }
   }, [finalizeLogin]);
 
-  const handleGuestLogin = useCallback(
-    (event: FormEvent<HTMLFormElement>) => {
-      event.preventDefault();
-      const trimmed = guestNameInput.trim();
-      if (!trimmed) {
-        setLoginError("Pick a display name to join as a guest.");
-        return;
-      }
-      try {
-        const secretKey = generateSecretKey();
-        const pubkeyHex = getPublicKey(secretKey);
-        finalizeLogin(pubkeyHex, trimmed);
-      } catch (error) {
-        console.error("Guest login failed", error);
-        setLoginError("Failed to generate a guest identity");
-      }
-    },
-    [finalizeLogin, guestNameInput],
-  );
-
   const handleLogout = useCallback(() => {
     const previousNpub = pubkeyRef.current;
     if (previousNpub) {
@@ -536,7 +520,6 @@ export function App() {
     setNpub(null);
     setLoginError(null);
     setNpubInputValue("");
-    setGuestNameInput("");
     setLocalAlias(null);
     setInputMode(null);
     setConsoleInput("/");
@@ -546,6 +529,10 @@ export function App() {
     gameInstanceRef.current?.setAvatar(null);
     setPlayerRooms([]);
     void setMicrophoneEnabled(false);
+    const epoch = Date.now();
+    resetChatSession(epoch);
+    chatSeenRef.current.clear();
+    setChatMap(new Map());
   }, [appendLog]);
 
   const handleConsoleInputKeyDown = useCallback((event: ReactKeyboardEvent<HTMLInputElement>) => {
@@ -817,7 +804,7 @@ export function App() {
         <div className="login-overlay">
           <div className="login-modal">
             <h1>INNPUB</h1>
-            <p className="login-description">Choose how you want to enter the tavern.</p>
+            <p className="login-description">Realtime audio and position over WebTransport. Enter a room to join that room's audio channel. Chrome required for audio to work.</p>
             <form className="login-form" onSubmit={handleManualLogin}>
               <input
                 type="text"
@@ -834,22 +821,6 @@ export function App() {
               <button type="submit" disabled={loginPending}>
                 Continue
               </button>
-            </form>
-            <div className="login-divider" aria-hidden="true">
-              <span>or</span>
-            </div>
-            <form className="guest-form" onSubmit={handleGuestLogin}>
-              <input
-                type="text"
-                value={guestNameInput}
-                onChange={event => {
-                  setGuestNameInput(event.target.value);
-                  setLoginError(null);
-                }}
-                placeholder="Pick a display name"
-                maxLength={32}
-              />
-              <button type="submit">Join as Guest</button>
             </form>
             <button type="button" className="ext-login" onClick={handleExtensionLogin} disabled={loginPending}>
               {loginPending ? "Connecting…" : "Login with NIP-07"}
