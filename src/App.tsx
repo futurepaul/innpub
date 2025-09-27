@@ -1,74 +1,62 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
-
-import "./index.css";
-import { initGame, type GameInstance } from "./game/initGame";
-import { Application } from "pixi.js";
-import { ExtensionSigner } from "applesauce-signers";
 import { getDisplayName } from "applesauce-core/helpers";
-import { decode as decodeNip19, npubEncode } from "nostr-tools/nip19";
+import { npubEncode } from "nostr-tools/nip19";
+import { Application } from "pixi.js";
 import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  onCleanup,
+  onMount,
+  Show,
+  type Component,
+} from "solid-js";
+import { Console, Dpad, Header, Login } from "./components";
+import { initGame, type GameInstance } from "./game/initGame";
+import "./index.css";
+import {
+  getAudioState,
+  getProfilePictureUrl,
+  removePlayer,
+  resetChatSession,
+  setMicrophoneEnabled,
+  setSpeakerEnabled,
   startStream,
   stopStream,
   subscribe,
+  subscribeAudioState,
+  subscribeChats,
   subscribeProfiles,
   updateLocalPlayer,
   updateLocalRooms,
-  removePlayer,
-  type PlayerState,
-  type PlayerProfile,
-  type FacingDirection,
-  getProfilePictureUrl,
-  subscribeAudioState,
-  setMicrophoneEnabled,
-  setSpeakerEnabled,
-  getAudioState,
   type AudioControlState,
-  subscribeChats,
-  sendChatMessage,
   type ChatMessage,
-  resetChatSession,
+  type FacingDirection,
+  type PlayerProfile,
+  type PlayerState
 } from "./multiplayer/stream";
 
-type DirectionKey = "up" | "down" | "left" | "right";
+export const App: Component = () => {
+  let containerRef: HTMLDivElement | undefined;
+  let gameInstance: GameInstance | null = null;
+  let avatarRef: string | null = null;
+  let pubkeyRef: string | null = null;
+  let remotePlayersRef: PlayerState[] = [];
 
-const DIRECTION_KEY_MAP: Record<DirectionKey, string> = {
-  up: "ArrowUp",
-  down: "ArrowDown",
-  left: "ArrowLeft",
-  right: "ArrowRight",
-};
+  const [playerRooms, setPlayerRooms] = createSignal<string[]>([]);
+  const [logMessages, setLogMessages] = createSignal<string[]>([]);
+  const [pubkey, setPubkey] = createSignal<string | null>(null);
+  const [npub, setNpub] = createSignal<string | null>(null);
+  const [localAlias, setLocalAlias] = createSignal<string | null>(null);
+  const [remotePlayers, setRemotePlayers] = createSignal<PlayerState[]>([]);
+  const [profileMap, setProfileMap] = createSignal<Map<string, PlayerProfile>>(new Map());
+  const [headRects, setHeadRects] = createSignal<Map<string, { rect: { x: number; y: number; width: number; height: number }; facing: FacingDirection }>>(new Map());
+  const [audioState, setAudioState] = createSignal<AudioControlState>(getAudioState());
+  const [chatMap, setChatMap] = createSignal<Map<string, ChatMessage>>(new Map());
+  let profileMapRef: Map<string, PlayerProfile> = new Map();
+  let chatSeenRef: Map<string, string> = new Map();
 
-export function App() {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const consoleInputRef = useRef<HTMLInputElement>(null);
-  const gameInstanceRef = useRef<GameInstance | null>(null);
-  const consoleLogRef = useRef<HTMLDivElement>(null);
-  const avatarRef = useRef<string | null>(null);
-  const pubkeyRef = useRef<string | null>(null);
-  const remotePlayersRef = useRef<PlayerState[]>([]);
-
-  const [playerRooms, setPlayerRooms] = useState<string[]>([]);
-  const [logMessages, setLogMessages] = useState<string[]>([]);
-  const [inputMode, setInputMode] = useState<"command" | "chat" | null>(null);
-  const [consoleInput, setConsoleInput] = useState("/");
-  const [pubkey, setPubkey] = useState<string | null>(null);
-  const [npub, setNpub] = useState<string | null>(null);
-  const [localAlias, setLocalAlias] = useState<string | null>(null);
-  const [npubInputValue, setNpubInputValue] = useState("");
-  const [loginError, setLoginError] = useState<string | null>(null);
-  const [loginPending, setLoginPending] = useState(false);
-  const [remotePlayers, setRemotePlayers] = useState<PlayerState[]>([]);
-  const [profileMap, setProfileMap] = useState<Map<string, PlayerProfile>>(new Map());
-  const [headRects, setHeadRects] = useState<Map<string, { rect: { x: number; y: number; width: number; height: number }; facing: FacingDirection }>>(new Map());
-  const [audioState, setAudioState] = useState<AudioControlState>(() => getAudioState());
-  const [chatMap, setChatMap] = useState<Map<string, ChatMessage>>(new Map());
-  const [consoleFocusReason, setConsoleFocusReason] = useState<"keyboard" | "pointer" | null>(null);
-  const consoleOpen = inputMode !== null;
-  const profileMapRef = useRef<Map<string, PlayerProfile>>(new Map());
-  const chatSeenRef = useRef<Map<string, string>>(new Map());
-
-  const appendLog = useCallback((message: string) => {
+  const appendLog = (message: string) => {
     setLogMessages(prev => {
       const next = [...prev, message];
       if (next.length > 100) {
@@ -76,437 +64,215 @@ export function App() {
       }
       return next;
     });
-  }, []);
+  };
 
-  const activeDirectionsRef = useRef<Set<DirectionKey>>(new Set());
+  const handleLogin = (hex: string, alias?: string) => {
+    const normalized = hex.toLowerCase();
+    const encoded = npubEncode(normalized);
+    const epoch = Date.now();
+    resetChatSession(epoch);
+    chatSeenRef.clear();
+    setChatMap(new Map());
+    pubkeyRef = normalized;
+    setPubkey(normalized);
+    setNpub(encoded);
+    setLocalAlias(alias ?? null);
+    appendLog(alias ? `Joined as ${alias} (${encoded})` : `Logged in as ${encoded}`);
+    gameInstance?.spawn();
+  };
 
-  const pressDirection = useCallback(
-    (direction: DirectionKey) => {
-      if (activeDirectionsRef.current.has(direction)) {
+  // Effect to sync pubkeyRef with pubkey signal
+  createEffect(() => {
+    pubkeyRef = pubkey();
+  });
+
+  // Effect to sync profileMapRef with profileMap signal
+  createEffect(() => {
+    profileMapRef = profileMap();
+  });
+
+  // Main stream setup effect
+  startStream();
+  const unsubscribePlayers = subscribe(states => {
+    remotePlayersRef = states;
+    setRemotePlayers(states);
+  });
+  const unsubscribeProfiles = subscribeProfiles(map => {
+    const clone = new Map(map);
+    profileMapRef = clone;
+    setProfileMap(clone);
+  });
+  const unsubscribeAudio = subscribeAudioState(state => {
+    setAudioState(state);
+  });
+  const unsubscribeChats = subscribeChats(map => {
+    const clone = new Map(map);
+    setChatMap(clone);
+
+    const seen = chatSeenRef;
+    for (const key of [...seen.keys()]) {
+      if (!clone.has(key)) {
+        seen.delete(key);
+      }
+    }
+
+    clone.forEach(entry => {
+      const lastId = seen.get(entry.npub);
+      if (lastId === entry.id) {
         return;
       }
-      activeDirectionsRef.current.add(direction);
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: DIRECTION_KEY_MAP[direction], bubbles: true }));
-    },
-    [],
-  );
+      seen.set(entry.npub, entry.id);
 
-  const releaseDirection = useCallback(
-    (direction: DirectionKey) => {
-      if (!activeDirectionsRef.current.has(direction)) {
-        return;
-      }
-      activeDirectionsRef.current.delete(direction);
-      window.dispatchEvent(new KeyboardEvent("keyup", { key: DIRECTION_KEY_MAP[direction], bubbles: true }));
-    },
-    [],
-  );
+      const currentPubkey = pubkeyRef;
+      const isLocal = currentPubkey ? entry.npub === currentPubkey : false;
+      const profile = profileMapRef.get(entry.npub)?.profile;
+      const display = isLocal
+        ? "You"
+        : profile
+          ? getDisplayName(profile) ?? `${entry.npub.slice(0, 12)}…`
+          : `${entry.npub.slice(0, 12)}…`;
+      appendLog(`[Chat] ${display}: ${entry.message}`);
+    });
+  });
 
-  const createDpadPressHandler = useCallback(
-    (direction: DirectionKey) => (event: ReactPointerEvent<HTMLButtonElement>) => {
-      event.preventDefault();
-      event.stopPropagation();
-      event.currentTarget.setPointerCapture?.(event.pointerId);
-      pressDirection(direction);
-    },
-    [pressDirection],
-  );
+  onCleanup(() => {
+    if (pubkeyRef) {
+      removePlayer(pubkeyRef);
+    }
+    setPlayerRooms([]);
+    unsubscribeProfiles();
+    unsubscribePlayers();
+    unsubscribeAudio();
+    unsubscribeChats();
+    chatSeenRef.clear();
+    setChatMap(new Map());
+    stopStream();
+  });
 
-  const createDpadReleaseHandler = useCallback(
-    (direction: DirectionKey) => (event: ReactPointerEvent<HTMLButtonElement>) => {
-      event.preventDefault();
-      event.stopPropagation();
-      event.currentTarget.releasePointerCapture?.(event.pointerId);
-      releaseDirection(direction);
-    },
-    [releaseDirection],
-  );
+  // Effect to update local rooms
+  createEffect(() => {
+    updateLocalRooms(playerRooms());
+  });
 
-  const resolvePubkey = useCallback((input: string): string => {
-    const trimmed = input.trim();
-    if (!trimmed) {
-      throw new Error("Enter a public key");
+  // Game initialization effect
+  const desiredAspect = 3 / 2;
+  const app = new Application();
+  let disposed = false;
+  let cleanup: (() => void) | undefined;
+  let hasRenderer = false;
+  let canvasAttached = false;
+
+  const resizeViewport = () => {
+    if(!containerRef) return
+    if (!hasRenderer || !app.renderer) return;
+
+    const parent = containerRef.parentElement as HTMLElement | null;
+    const availableWidth = parent ? parent.clientWidth : window.innerWidth;
+    const maxHeight = Math.max(240, window.innerHeight * 0.6);
+
+    let targetWidth = availableWidth;
+    let targetHeight = targetWidth / desiredAspect;
+
+    if (targetHeight > maxHeight) {
+      targetHeight = maxHeight;
+      targetWidth = targetHeight * desiredAspect;
     }
 
-    if (/^npub/i.test(trimmed)) {
-      const decoded = decodeNip19(trimmed);
-      if (decoded.type !== "npub") {
-        throw new Error("Unsupported NIP-19 format");
-      }
-      const data = decoded.data;
-      if (typeof data !== "string") {
-        throw new Error("Invalid npub payload");
-      }
-      return data.toLowerCase();
-    }
+    targetWidth = Math.floor(targetWidth);
+    targetHeight = Math.floor(targetHeight);
 
-    if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
-      return trimmed.toLowerCase();
-    }
+    containerRef.style.width = `${targetWidth}px`;
+    containerRef.style.height = `${targetHeight}px`;
+    containerRef.style.maxWidth = "100%";
 
-    throw new Error("Invalid public key");
-  }, []);
+    app.renderer.resize(targetWidth, targetHeight);
+    app.canvas.style.width = `${targetWidth}px`;
+    app.canvas.style.height = `${targetHeight}px`;
+  };
 
-  const finalizeLogin = useCallback(
-    (hex: string, alias?: string) => {
-      const normalized = hex.toLowerCase();
-      const encoded = npubEncode(normalized);
-      const epoch = Date.now();
-      resetChatSession(epoch);
-      chatSeenRef.current.clear();
-      setChatMap(new Map());
-      pubkeyRef.current = normalized;
-      setPubkey(normalized);
-      setNpub(encoded);
-      setLocalAlias(alias ?? null);
-      setLoginError(null);
-      setNpubInputValue("");
-      appendLog(alias ? `Joined as ${alias} (${encoded})` : `Logged in as ${encoded}`);
-      gameInstanceRef.current?.spawn();
-    },
-    [appendLog],
-  );
+  app
+    .init({
+      background: "#344149",
+      hello: false,
+      autoDensity: true,
+      antialias: false,
+      preference: "webgl",
+    })
+    .then(async () => {
+      hasRenderer = true;
+      resizeViewport();
+      window.addEventListener("resize", resizeViewport);
 
-  useEffect(() => {
-    pubkeyRef.current = pubkey;
-  }, [pubkey]);
-
-  useEffect(() => {
-    profileMapRef.current = profileMap;
-  }, [profileMap]);
-
-  useEffect(() => {
-    startStream();
-    const unsubscribePlayers = subscribe(states => {
-      remotePlayersRef.current = states;
-      setRemotePlayers(states);
-    });
-    const unsubscribeProfiles = subscribeProfiles(map => {
-      const clone = new Map(map);
-      profileMapRef.current = clone;
-      setProfileMap(clone);
-    });
-    const unsubscribeAudio = subscribeAudioState(state => {
-      setAudioState(state);
-    });
-    const unsubscribeChats = subscribeChats(map => {
-      const clone = new Map(map);
-      setChatMap(clone);
-
-      const seen = chatSeenRef.current;
-      for (const key of [...seen.keys()]) {
-        if (!clone.has(key)) {
-          seen.delete(key);
-        }
-      }
-
-      clone.forEach(entry => {
-        const lastId = seen.get(entry.npub);
-        if (lastId === entry.id) {
-          return;
-        }
-        seen.set(entry.npub, entry.id);
-
-        const currentPubkey = pubkeyRef.current;
-        const isLocal = currentPubkey ? entry.npub === currentPubkey : false;
-        const profile = profileMapRef.current.get(entry.npub)?.profile;
-        const display = isLocal
-          ? "You"
-          : profile
-            ? getDisplayName(profile) ?? `${entry.npub.slice(0, 12)}…`
-            : `${entry.npub.slice(0, 12)}…`;
-        appendLog(`[Chat] ${display}: ${entry.message}`);
-      });
-    });
-
-    return () => {
-      if (pubkeyRef.current) {
-        removePlayer(pubkeyRef.current);
-      }
-      setPlayerRooms([]);
-      unsubscribeProfiles();
-      unsubscribePlayers();
-      unsubscribeAudio();
-      unsubscribeChats();
-      chatSeenRef.current.clear();
-      setChatMap(new Map());
-      stopStream();
-    };
-  }, []);
-
-  useEffect(() => {
-    updateLocalRooms(playerRooms);
-  }, [playerRooms]);
-
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) {
-      return;
-    }
-
-    const desiredAspect = 3 / 2;
-    const app = new Application();
-    let disposed = false;
-    let cleanup: (() => void) | undefined;
-    let hasRenderer = false;
-    let canvasAttached = false;
-
-    const resizeViewport = () => {
-      if (!hasRenderer || !app.renderer) {
-        return;
-      }
-
-      const parent = container.parentElement as HTMLElement | null;
-      const availableWidth = parent ? parent.clientWidth : window.innerWidth;
-      const maxHeight = Math.max(240, window.innerHeight * 0.6);
-
-      let targetWidth = availableWidth;
-      let targetHeight = targetWidth / desiredAspect;
-
-      if (targetHeight > maxHeight) {
-        targetHeight = maxHeight;
-        targetWidth = targetHeight * desiredAspect;
-      }
-
-      targetWidth = Math.floor(targetWidth);
-      targetHeight = Math.floor(targetHeight);
-
-      container.style.width = `${targetWidth}px`;
-      container.style.height = `${targetHeight}px`;
-      container.style.maxWidth = "100%";
-
-      app.renderer.resize(targetWidth, targetHeight);
-      app.canvas.style.width = `${targetWidth}px`;
-      app.canvas.style.height = `${targetHeight}px`;
-    };
-
-    app
-      .init({
-        background: "#344149",
-        hello: false,
-        autoDensity: true,
-        antialias: false,
-        preference: "webgl",
-      })
-      .then(async () => {
-        hasRenderer = true;
-        resizeViewport();
-        window.addEventListener("resize", resizeViewport);
-
-        if (disposed) {
-          window.removeEventListener("resize", resizeViewport);
-          app.destroy(true);
-          return;
-        }
-
-        app.canvas.classList.add("game-canvas");
-        const firstChild = container.firstChild;
-        if (firstChild) {
-          container.insertBefore(app.canvas, firstChild);
-        } else {
-          container.appendChild(app.canvas);
-        }
-        canvasAttached = true;
-        const game = await initGame(app, {
-          onPlayerPosition: data => {
-            const currentNpub = pubkeyRef.current;
-            if (currentNpub) {
-              updateLocalPlayer({ npub: currentNpub, x: data.x, y: data.y, facing: data.facing });
-            }
-          },
-          onConsoleMessage: appendLog,
-          onHeadPosition: (id, rect, facing) => {
-            const key = id === "local" ? pubkeyRef.current : id;
-            if (!key) {
-              return;
-            }
-
-            setHeadRects(prev => {
-              const next = new Map(prev);
-              if (rect) {
-                next.set(key, { rect, facing });
-              } else {
-                next.delete(key);
-              }
-              return next;
-            });
-          },
-          onPlayerRooms: rooms => {
-            setPlayerRooms(rooms);
-          },
-        });
-        gameInstanceRef.current = game;
-        game.setAvatar(avatarRef.current);
-        const currentNpub = pubkeyRef.current;
-        const remotes = remotePlayersRef.current.filter(player => player.npub !== currentNpub);
-        game.syncPlayers(remotes);
-        cleanup = () => {
-          game.destroy();
-          gameInstanceRef.current = null;
-        };
-      })
-      .catch(error => {
-        console.error("Failed to initialise PixiJS", error);
-      });
-
-    return () => {
-      disposed = true;
-      cleanup?.();
-      window.removeEventListener("resize", resizeViewport);
-      if (canvasAttached && app.renderer && app.canvas.parentElement === container) {
-        container.removeChild(app.canvas);
-      }
-      if (hasRenderer && app.renderer) {
+      if (disposed) {
+        window.removeEventListener("resize", resizeViewport);
         app.destroy(true);
+        return;
       }
-    };
-  }, []);
 
-  useEffect(() => {
-    if (!consoleOpen || consoleFocusReason !== "keyboard") {
-      return;
-    }
-    const input = consoleInputRef.current;
-    if (!input) {
-      return;
-    }
+      app.canvas.classList.add("game-canvas");
+      const firstChild = containerRef?.firstChild;
+      if (firstChild) {
+        containerRef?.insertBefore(app.canvas, firstChild);
+      } else {
+        containerRef?.appendChild(app.canvas);
+      }
+      canvasAttached = true;
+      const game = await initGame(app, {
+        onPlayerPosition: data => {
+          const currentNpub = pubkeyRef;
+          if (currentNpub) {
+            updateLocalPlayer({ npub: currentNpub, x: data.x, y: data.y, facing: data.facing });
+          }
+        },
+        onConsoleMessage: appendLog,
+        onHeadPosition: (id, rect, facing) => {
+          const key = id === "local" ? pubkeyRef : id;
+          if (!key) {
+            return;
+          }
 
-    const frame = requestAnimationFrame(() => {
-      input.focus();
-      input.setSelectionRange(consoleInput.length, consoleInput.length);
+          setHeadRects(prev => {
+            const next = new Map(prev);
+            if (rect) {
+              next.set(key, { rect, facing });
+            } else {
+              next.delete(key);
+            }
+            return next;
+          });
+        },
+        onPlayerRooms: rooms => {
+          setPlayerRooms(rooms);
+        },
+      });
+      gameInstance = game;
+      game.setAvatar(avatarRef);
+      const currentNpub = pubkeyRef;
+      const remotes = remotePlayersRef.filter(player => player.npub !== currentNpub);
+      game.syncPlayers(remotes);
+      cleanup = () => {
+        game.destroy();
+        gameInstance = null;
+      };
+    })
+    .catch(error => {
+      console.error("Failed to initialise PixiJS", error);
     });
 
-    return () => cancelAnimationFrame(frame);
-  }, [consoleOpen, consoleInput.length, consoleFocusReason]);
-
-  useEffect(() => {
-    if (!consoleOpen) {
-      return;
+  onCleanup(() => {
+    disposed = true;
+    cleanup?.();
+    window.removeEventListener("resize", resizeViewport);
+    if (canvasAttached && app.renderer && app.canvas.parentElement === containerRef) {
+      containerRef?.removeChild(app.canvas);
     }
-
-    const element = consoleLogRef.current;
-    if (element) {
-      element.scrollTop = element.scrollHeight;
+    if (hasRenderer && app.renderer) {
+      app.destroy(true);
     }
-  }, [consoleOpen, logMessages.length]);
+  });
 
-  useEffect(() => {
-    if (!gameInstanceRef.current) {
-      return;
-    }
-
-    if (!pubkey) {
-      gameInstanceRef.current.setInputCaptured(true);
-      return;
-    }
-
-    const input = consoleInputRef.current;
-    const shouldCapture = Boolean(consoleOpen && (consoleFocusReason === "keyboard" || document.activeElement === input));
-    gameInstanceRef.current.setInputCaptured(shouldCapture);
-  }, [pubkey, consoleOpen, consoleFocusReason]);
-
-  useEffect(() => {
-    if (!consoleOpen) {
-      setConsoleFocusReason(null);
-    }
-  }, [consoleOpen]);
-
-  useEffect(() => {
-    const handleShortcut = (event: globalThis.KeyboardEvent) => {
-      if (inputMode) {
-        return;
-      }
-      if (event.defaultPrevented) {
-        return;
-      }
-
-      const isModifierHeld = event.ctrlKey || event.metaKey || event.altKey;
-      if (!isModifierHeld && event.key === "/") {
-        event.preventDefault();
-        event.stopPropagation();
-        setInputMode("command");
-        setConsoleInput("/");
-        gameInstanceRef.current?.setInputCaptured(true);
-        setConsoleFocusReason("keyboard");
-        return;
-      }
-
-      if (!isModifierHeld && (event.key === "t" || event.key === "T")) {
-        event.preventDefault();
-        event.stopPropagation();
-        setInputMode("chat");
-        setConsoleInput("");
-        gameInstanceRef.current?.setInputCaptured(true);
-        setConsoleFocusReason("keyboard");
-      }
-    };
-
-    window.addEventListener("keydown", handleShortcut, { capture: true });
-    return () => window.removeEventListener("keydown", handleShortcut, { capture: true });
-  }, [inputMode]);
-
-  const handleConsoleSubmit = useCallback(
-    async (event: FormEvent<HTMLFormElement>) => {
-      event.preventDefault();
-      const mode = inputMode;
-      const trimmed = consoleInput.trim();
-
-      const isCommand = trimmed.startsWith("/");
-
-      if (isCommand) {
-        if (trimmed !== "/") {
-          appendLog(`> ${trimmed}`);
-          if (trimmed === "/spawn") {
-            gameInstanceRef.current?.spawn();
-          }
-        }
-      } else if (trimmed.length > 0) {
-        try {
-          await sendChatMessage(trimmed);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "Failed to send chat";
-          appendLog(`[Chat] ${message}`);
-        }
-      }
-
-      setConsoleInput("/");
-      setInputMode(null);
-      setConsoleFocusReason(null);
-      gameInstanceRef.current?.setInputCaptured(false);
-    },
-    [appendLog, consoleInput, inputMode],
-  );
-
-  const handleManualLogin = useCallback(
-    (event: FormEvent<HTMLFormElement>) => {
-      event.preventDefault();
-      try {
-        const pubkeyHex = resolvePubkey(npubInputValue);
-        finalizeLogin(pubkeyHex);
-      } catch (error) {
-        setLoginError(error instanceof Error ? error.message : "Failed to parse public key");
-      }
-    },
-    [finalizeLogin, npubInputValue, resolvePubkey],
-  );
-
-  const handleExtensionLogin = useCallback(async () => {
-    setLoginPending(true);
-    setLoginError(null);
-    try {
-      const signer = new ExtensionSigner();
-      const pubkeyHex = await signer.getPublicKey();
-      finalizeLogin(pubkeyHex);
-    } catch (error) {
-      console.error("Extension login failed", error);
-      setLoginError("Failed to login with NIP-07 extension");
-    } finally {
-      setLoginPending(false);
-    }
-  }, [finalizeLogin]);
-
-  const handleLogout = useCallback(() => {
-    const previousNpub = pubkeyRef.current;
+  const handleLogout = () => {
+    const previousNpub = pubkeyRef;
     if (previousNpub) {
       removePlayer(previousNpub);
       setHeadRects(prev => {
@@ -515,105 +281,52 @@ export function App() {
         return next;
       });
     }
-    pubkeyRef.current = null;
+    pubkeyRef = null;
     setPubkey(null);
     setNpub(null);
-    setLoginError(null);
-    setNpubInputValue("");
     setLocalAlias(null);
-    setInputMode(null);
-    setConsoleInput("/");
-    setConsoleFocusReason(null);
     appendLog("Logged out");
-    avatarRef.current = null;
-    gameInstanceRef.current?.setAvatar(null);
+    avatarRef = null;
+    gameInstance?.setAvatar(null);
     setPlayerRooms([]);
     void setMicrophoneEnabled(false);
     const epoch = Date.now();
     resetChatSession(epoch);
-    chatSeenRef.current.clear();
+    chatSeenRef.clear();
     setChatMap(new Map());
-  }, [appendLog]);
+  };
 
-  const handleConsoleInputKeyDown = useCallback((event: ReactKeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      setConsoleInput("/");
-      setInputMode(null);
-      gameInstanceRef.current?.setInputCaptured(false);
-      setConsoleFocusReason(null);
-    }
-  }, []);
 
-  const handleToggleMic = useCallback(async () => {
-    if (!audioState.supported) {
-      return;
-    }
-    try {
-      await setMicrophoneEnabled(!audioState.micEnabled);
-    } catch (error) {
-      console.error("Failed to toggle microphone", error);
-    }
-  }, [audioState.micEnabled, audioState.supported]);
-
-  const handleToggleSpeaker = useCallback(() => {
-    setSpeakerEnabled(!audioState.speakerEnabled);
-  }, [audioState.speakerEnabled]);
-
-  const handleConsoleTap = useCallback(() => {
-    if (consoleOpen || !pubkey) {
-      return;
-    }
-    setInputMode("chat");
-    setConsoleInput("");
-    gameInstanceRef.current?.setInputCaptured(true);
-    setConsoleFocusReason("pointer");
-  }, [consoleOpen, pubkey]);
-
-  const localProfile = pubkey ? profileMap.get(pubkey)?.profile : undefined;
-
-  const displayName = useMemo(() => {
-    if (localAlias) {
-      return localAlias;
-    }
-    const name = localProfile ? getDisplayName(localProfile) : null;
-    if (name) {
-      return name;
-    }
-    if (npub) {
-      return `${npub.slice(0, 12)}…`;
-    }
-    return null;
-  }, [localAlias, localProfile, npub]);
-
-  const avatarUrl = useMemo(() => {
-    if (!pubkey) {
+  const avatarUrl = createMemo(() => {
+    const pk = pubkey();
+    if (!pk) {
       return null;
     }
-    return getProfilePictureUrl(pubkey) ?? null;
-  }, [pubkey, profileMap]);
+    return getProfilePictureUrl(pk) ?? null;
+  });
 
-  useEffect(() => {
-    avatarRef.current = avatarUrl;
-    if (!gameInstanceRef.current) {
+  // Avatar effect
+  createEffect(() => {
+    avatarRef = avatarUrl();
+    if (!gameInstance) {
       return;
     }
-    gameInstanceRef.current.setAvatar(avatarUrl);
-  }, [avatarUrl]);
+    gameInstance.setAvatar(avatarUrl());
+  });
 
-  useEffect(() => {
-    const game = gameInstanceRef.current;
-    if (!game) {
-      return;
-    }
-    const currentNpub = pubkeyRef.current;
-    const remotes = remotePlayers.filter(player => player.npub !== currentNpub);
+  // Remote players sync effect
+  createEffect(() => {
+    const game = gameInstance;
+    if (!game) return;
+
+    const currentNpub = pubkeyRef;
+    const remotes = remotePlayers().filter(player => player.npub !== currentNpub);
     game.syncPlayers(remotes);
-  }, [remotePlayers]);
+  });
 
-  const overlayEntries = useMemo(() => {
-    const stateMap = new Map(remotePlayers.map(player => [player.npub, player]));
-    const entries: Array<{
+  const overlayEntries = createMemo(() => {
+    const stateMap = new Map(remotePlayers().map(player => [player.npub, player]));
+      const entries: Array<{
       npub: string;
       rect: { x: number; y: number; width: number; height: number };
       name: string;
@@ -621,216 +334,99 @@ export function App() {
       speakingLevel: number;
       chat?: ChatMessage;
     }> = [];
-    headRects.forEach(({ rect }, key) => {
-      const profile = profileMap.get(key)?.profile;
+    headRects().forEach(({ rect }, key) => {
+      const profile = profileMap().get(key)?.profile;
       let display = profile ? getDisplayName(profile) : `${key.slice(0, 12)}…`;
-      if (key === (npub ?? "")) {
-        display = displayName ?? display;
+      if (key === (npub() ?? "")) {
+        // For local player, show alias if available, otherwise profile name or npub
+        const alias = localAlias();
+        if (alias) {
+          display = alias;
+        } else {
+          const localProfile = profile;
+          const name = localProfile ? getDisplayName(localProfile) : null;
+          if (name) {
+            display = name;
+          } else {
+            const currentNpub = npub();
+            if (currentNpub) {
+              display = `${currentNpub.slice(0, 12)}…`;
+            }
+          }
+        }
       }
 
       const avatar =
         getProfilePictureUrl(key) ??
-        (key === (npub ?? "") ? avatarUrl ?? undefined : undefined) ??
+        (key === (npub() ?? "") ? avatarUrl() ?? undefined : undefined) ??
         `https://robohash.org/${key}.png`;
 
       const playerState = stateMap.get(key);
       const speakingLevel = playerState?.speakingLevel ?? 0;
-      const chat = chatMap.get(key);
+      const chat = chatMap().get(key);
 
       entries.push({ npub: key, rect, name: display ?? "Player", avatar, speakingLevel, chat });
     });
     return entries;
-  }, [headRects, profileMap, npub, displayName, avatarUrl, remotePlayers, chatMap]);
+  });
 
-  const lines = consoleOpen ? logMessages : logMessages.slice(-1);
-  const statusMessage = inputMode === "chat" ? "Chat ready" : inputMode === "command" ? "Console ready" : "Tap here or press T to chat";
-  const visibleLogs = lines.length > 0 ? lines : [statusMessage];
-  const consoleRegionClass = `console-region${consoleOpen ? " is-open" : ""}`;
 
   return (
-    <div className="app-shell">
-      <div className="app-main">
-        <header className="status-bar">
-          {pubkey ? (
-            <div className="status-strip">
-              <div className="status-strip__identity">
-                {avatarUrl ? (
-                  <img className="status-strip__avatar" src={avatarUrl} alt="Avatar" />
-                ) : (
-                  <div className="status-strip__avatar status-strip__avatar--placeholder" />
-                )}
-                <div className="status-strip__meta">
-                  <span className="status-strip__label">Logged in</span>
-                  <span className="status-strip__name" title={npub ?? undefined}>
-                    {displayName ?? (npub ? `${npub.slice(0, 12)}…` : "Guest")}
-                  </span>
-                </div>
-              </div>
-              <div className="status-strip__controls">
-                <button
-                  type="button"
-                  className={`status-strip__btn${audioState.micEnabled ? " is-on" : ""}`}
-                  onClick={handleToggleMic}
-                  disabled={!audioState.supported}
-                >
-                  {audioState.micEnabled ? "Mic On" : "Mic Off"}
-                </button>
-                <button
-                  type="button"
-                  className={`status-strip__btn${audioState.speakerEnabled ? " is-on" : ""}`}
-                  onClick={handleToggleSpeaker}
-                >
-                  {audioState.speakerEnabled ? "Speaker On" : "Speaker Off"}
-                </button>
-                <button type="button" className="status-strip__btn status-strip__btn--ghost" onClick={handleLogout}>
-                  Logout
-                </button>
-              </div>
-              {audioState.micError ? <div className="status-error">{audioState.micError}</div> : null}
-            </div>
-          ) : (
-            <div className="status-strip status-strip--placeholder">Sign in to explore the InnPub.</div>
-          )}
-        </header>
+    <div class="app-shell">
+      <div class="app-main">
+        <Header
+          pubkey={pubkey()}
+          npub={npub()}
+          localAlias={localAlias()}
+          profileMap={profileMap()}
+          audioState={audioState()}
+          onLogout={handleLogout}
+        />
 
-        <div className="game-container">
-          <div className="game-surface" ref={containerRef}>
-            <div className="game-overlays">
-              <div className="player-overlays">
-                {overlayEntries.map(entry => (
-                  <div
-                    key={entry.npub}
-                    className={`avatar-head${entry.speakingLevel > 0.02 ? " is-speaking" : ""}`}
-                    style={{
-                      width: `${entry.rect.width}px`,
-                      height: `${entry.rect.height}px`,
-                      transform: `translate3d(${entry.rect.x}px, ${entry.rect.y}px, 0)`,
-                    }}
-                  >
-                    <img src={entry.avatar} alt={entry.name} />
-                    {entry.chat ? (
-                      <div className="chat-bubble" key={entry.chat.id}>
-                        <span>{entry.chat.message}</span>
-                      </div>
-                    ) : null}
-                    <div className="avatar-label">{entry.name}</div>
-                  </div>
-                ))}
+        <div class="game-container">
+          <div class="game-surface" ref={containerRef}>
+            <div class="game-overlays">
+              <div class="player-overlays">
+                <For each={overlayEntries()}>
+                  {(entry) => (
+                    <div
+                      class={`avatar-head${entry.speakingLevel > 0.02 ? " is-speaking" : ""}`}
+                      style={{
+                        width: `${entry.rect.width}px`,
+                        height: `${entry.rect.height}px`,
+                        transform: `translate3d(${entry.rect.x}px, ${entry.rect.y}px, 0)`,
+                      }}
+                    >
+                      <img src={entry.avatar} alt={entry.name} />
+                      <Show when={entry.chat}>
+                        <div class="chat-bubble">
+                          <span>{entry.chat!.message}</span>
+                        </div>
+                      </Show>
+                      <div class="avatar-label">{entry.name}</div>
+                    </div>
+                  )}
+                </For>
               </div>
-              {pubkey ? (
-                <div className="dpad" aria-hidden="true">
-                  <button
-                    type="button"
-                    className="dpad-btn dpad-btn--up"
-                    onPointerDown={createDpadPressHandler("up")}
-                    onPointerUp={createDpadReleaseHandler("up")}
-                    onPointerLeave={createDpadReleaseHandler("up")}
-                    onPointerCancel={createDpadReleaseHandler("up")}
-                  >
-                    ↑
-                  </button>
-                  <div className="dpad-middle">
-                    <button
-                      type="button"
-                      className="dpad-btn dpad-btn--left"
-                      onPointerDown={createDpadPressHandler("left")}
-                      onPointerUp={createDpadReleaseHandler("left")}
-                      onPointerLeave={createDpadReleaseHandler("left")}
-                      onPointerCancel={createDpadReleaseHandler("left")}
-                    >
-                      ←
-                    </button>
-                    <button
-                      type="button"
-                      className="dpad-btn dpad-btn--right"
-                      onPointerDown={createDpadPressHandler("right")}
-                      onPointerUp={createDpadReleaseHandler("right")}
-                      onPointerLeave={createDpadReleaseHandler("right")}
-                      onPointerCancel={createDpadReleaseHandler("right")}
-                    >
-                      →
-                    </button>
-                  </div>
-                  <button
-                    type="button"
-                    className="dpad-btn dpad-btn--down"
-                    onPointerDown={createDpadPressHandler("down")}
-                    onPointerUp={createDpadReleaseHandler("down")}
-                    onPointerLeave={createDpadReleaseHandler("down")}
-                    onPointerCancel={createDpadReleaseHandler("down")}
-                  >
-                    ↓
-                  </button>
-                </div>
-              ) : null}
+              <Dpad visible={!!pubkey()} />
             </div>
           </div>
         </div>
 
-        <section
-          className={consoleRegionClass}
-          onClick={consoleOpen ? undefined : handleConsoleTap}
-          role="presentation"
-        >
-          <div className="console-region__log" ref={consoleLogRef}>
-            {visibleLogs.map((line, index) => (
-              <div key={`${index}-${line}`} className="console-line">
-                {line}
-              </div>
-            ))}
-          </div>
-          {consoleOpen && (
-            <form className="console-region__form" onSubmit={handleConsoleSubmit}>
-              <span className="console-region__prompt">&gt;</span>
-              <input
-                ref={consoleInputRef}
-                value={consoleInput}
-                onChange={event => setConsoleInput(event.target.value)}
-                onKeyDown={handleConsoleInputKeyDown}
-                onFocus={() => setConsoleFocusReason("keyboard")}
-                onBlur={() => setConsoleFocusReason(null)}
-                spellCheck={false}
-                autoComplete="off"
-                autoCorrect="off"
-                aria-label="Console input"
-                placeholder={inputMode === "chat" ? "Type a message…" : undefined}
-              />
-            </form>
-          )}
-        </section>
+        <Console
+          isLoggedIn={!!pubkey()}
+          logMessages={logMessages()}
+          onAppendLog={appendLog}
+          onSetInputCaptured={(captured) => gameInstance?.setInputCaptured(captured)}
+          onSpawn={() => gameInstance?.spawn()}
+        />
       </div>
 
-      {!pubkey && (
-        <div className="login-overlay">
-          <div className="login-modal">
-            <h1>INNPUB</h1>
-            <p className="login-description">Realtime audio and position over WebTransport. Enter a room to join that room's audio channel. Chrome required for audio to work.</p>
-            <form className="login-form" onSubmit={handleManualLogin}>
-              <input
-                type="text"
-                value={npubInputValue}
-                onChange={event => {
-                  setNpubInputValue(event.target.value);
-                  setLoginError(null);
-                }}
-                placeholder="Paste your npub or hex public key"
-                spellCheck={false}
-                autoComplete="off"
-                autoCorrect="off"
-              />
-              <button type="submit" disabled={loginPending}>
-                Continue
-              </button>
-            </form>
-            <button type="button" className="ext-login" onClick={handleExtensionLogin} disabled={loginPending}>
-              {loginPending ? "Connecting…" : "Login with NIP-07"}
-            </button>
-            {loginError && <div className="login-error">{loginError}</div>}
-          </div>
-        </div>
-      )}
+      <Show when={!pubkey()}>
+        <Login onLogin={handleLogin} />
+      </Show>
     </div>
   );
-}
+};
 
 export default App;

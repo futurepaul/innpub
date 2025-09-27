@@ -1,5 +1,5 @@
 {
-  "name": "bun-react-template",
+  "name": "innpub",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -19,16 +19,13 @@
     "moq-and-other-stuff": "file:./libs/moq-and-other-stuff",
     "nostr-tools": "^2.17.0",
     "pixi.js": "^8.13.2",
-    "react": "^19",
-    "react-dom": "^19",
-    "wouter": "^3.7.1",
+    "solid-js": "^1.9.9",
     "zod": "^4.1.11"
   },
   "devDependencies": {
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
     "@types/bun": "latest",
-    "@vitejs/plugin-react": "^5.0.3",
-    "vite": "^5.4.10"
+    "solid-devtools": "^0.34.3",
+    "vite": "^5.4.10",
+    "vite-plugin-solid": "^2.11.8"
   }
 }
