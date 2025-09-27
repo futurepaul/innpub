@@ -54,11 +54,6 @@ export interface ChatMessage {
   expiresAt: number;
 }
 
-type PlayerListener = (state: PlayerState[]) => void;
-type ProfileListener = (profiles: Map<string, PlayerProfile>) => void;
-type AudioStateListener = (state: AudioControlState) => void;
-type ChatListener = (messages: Map<string, ChatMessage>) => void;
-
 interface RemoteSubscription {
   path: Moq.Path.Valid;
   stateTrack: Moq.Track;
@@ -95,11 +90,6 @@ interface FrameProducerState {
   producer: Hang.Frame.Producer;
   keyframeSent: boolean;
 }
-
-const listeners = new Set<PlayerListener>();
-const profileListeners = new Set<ProfileListener>();
-const audioStateListeners = new Set<AudioStateListener>();
-const chatListeners = new Set<ChatListener>();
 
 const players = new Map<string, PlayerState>();
 const stateBySource = new Map<string, PlayerState>();
@@ -371,20 +361,9 @@ let audioState: AudioControlState = {
   supported: audioSupported,
 };
 
-function notifyAudioState() {
-  syncAudioStateToStore();
-  for (const listener of audioStateListeners) {
-    try {
-      listener(audioState);
-    } catch (error) {
-      console.error("audio state listener failed", error);
-    }
-  }
-}
-
 function setAudioState(patch: Partial<AudioControlState>) {
   audioState = { ...audioState, ...patch };
-  notifyAudioState();
+  syncAudioStateToStore();
 }
 
 function isResetStreamError(error: unknown): boolean {
@@ -748,7 +727,7 @@ function pruneChatMessages() {
     }
   }
   if (mutated) {
-    notifyChats();
+    syncChatsToStore();
   }
 }
 
@@ -899,7 +878,7 @@ function setSpeakingLevel(npub: string, level: number) {
     players.set(npub, { ...current, speakingLevel: level });
   }
 
-  notifyPlayers();
+  syncPlayersToStore();
 }
 
 function clearSpeakingLevel(npub: string) {
@@ -925,7 +904,7 @@ function clearSpeakingLevel(npub: string) {
     players.set(npub, stripSpeaking(current));
   }
 
-  notifyPlayers();
+  syncPlayersToStore();
 }
 
 function normalizeRooms(rooms: readonly string[]): string[] {
@@ -986,7 +965,7 @@ function setRooms(npub: string, rooms: readonly string[]): void {
     players.set(npub, normalized.length > 0 ? { ...current, rooms: normalized } : stripRooms(current));
   }
 
-  notifyPlayers();
+  syncPlayersToStore();
   updateAudioMix();
 }
 
@@ -1014,7 +993,7 @@ function clearRooms(npub: string): void {
     players.set(npub, stripRooms(current));
   }
 
-  notifyPlayers();
+  syncPlayersToStore();
   updateAudioMix();
 }
 
@@ -1051,7 +1030,7 @@ function addSourceState(sourceKey: string, state: PlayerState) {
   bucket.add(sourceKey);
   players.set(state.npub, enriched);
   trackProfile(state.npub);
-  notifyPlayers();
+  syncPlayersToStore();
 }
 
 function removeSource(sourceKey: string) {
@@ -1083,28 +1062,13 @@ function removeSource(sourceKey: string) {
     cleanupProfileIfOrphan(existing.npub);
   }
 
-  notifyPlayers();
+  syncPlayersToStore();
 }
 
 function clearRemoteSources() {
   const keys = [...stateBySource.keys()].filter(key => key.startsWith("remote:"));
   for (const key of keys) {
     removeSource(key);
-  }
-}
-
-function notifyPlayers() {
-  syncPlayersToStore();
-  const snapshot = Array.from(players.values());
-  for (const listener of listeners) {
-    listener(snapshot);
-  }
-}
-
-function notifyProfiles() {
-  syncProfilesToStore();
-  for (const listener of profileListeners) {
-    listener(profiles);
   }
 }
 
@@ -1190,29 +1154,17 @@ function clearResetErrorCounts(prefix: string): void {
   }
 }
 
-function notifyChats() {
-  syncChatsToStore();
-  const snapshot = new Map(chatMessages);
-  for (const listener of chatListeners) {
-    try {
-      listener(snapshot);
-    } catch (error) {
-      console.error("chat listener failed", error);
-    }
-  }
-}
-
 function setChatEntry(entry: ChatMessage) {
   if (entry.ts < chatSessionEpoch) {
     return;
   }
   chatMessages.set(entry.npub, entry);
-  notifyChats();
+  syncChatsToStore();
 }
 
 function clearChatEntry(npub: string) {
   if (chatMessages.delete(npub)) {
-    notifyChats();
+    syncChatsToStore();
   }
 }
 
@@ -1263,7 +1215,7 @@ function trackProfile(npub: string) {
     .profile({ pubkey: hexPubkey ?? npub, relays: DEFAULT_RELAYS })
     .subscribe(profile => {
       profiles.set(npub, { npub, profile });
-      notifyProfiles();
+      syncProfilesToStore();
     });
 
   profileSubscriptions.set(npub, {
@@ -1272,7 +1224,7 @@ function trackProfile(npub: string) {
 
   if (!profiles.has(npub)) {
     profiles.set(npub, { npub });
-    notifyProfiles();
+    syncProfilesToStore();
   }
 }
 
@@ -1280,7 +1232,7 @@ function untrackProfile(npub: string) {
   profileSubscriptions.get(npub)?.unsubscribe();
   profileSubscriptions.delete(npub);
   profiles.delete(npub);
-  notifyProfiles();
+  syncProfilesToStore();
 }
 
 function normalizeIdentifier(value: unknown): string | null {
@@ -1503,7 +1455,7 @@ function handleDisconnected() {
   releaseMicrophoneTrack();
   if (chatMessages.size > 0) {
     chatMessages.clear();
-    notifyChats();
+    syncChatsToStore();
   }
 }
 
@@ -1926,42 +1878,6 @@ function stopPruneTimer() {
   }
 }
 
-export function subscribe(callback: PlayerListener) {
-  syncPlayersToStore();
-  listeners.add(callback);
-  callback(Array.from(players.values()));
-  return () => {
-    listeners.delete(callback);
-  };
-}
-
-export function subscribeProfiles(callback: ProfileListener) {
-  syncProfilesToStore();
-  profileListeners.add(callback);
-  callback(profiles);
-  return () => {
-    profileListeners.delete(callback);
-  };
-}
-
-export function subscribeAudioState(callback: AudioStateListener) {
-  syncAudioStateToStore();
-  audioStateListeners.add(callback);
-  callback(audioState);
-  return () => {
-    audioStateListeners.delete(callback);
-  };
-}
-
-export function subscribeChats(callback: ChatListener) {
-  syncChatsToStore();
-  chatListeners.add(callback);
-  callback(new Map(chatMessages));
-  return () => {
-    chatListeners.delete(callback);
-  };
-}
-
 export function startStream() {
   if (started) {
     return;
@@ -2022,7 +1938,7 @@ export function resetChatSession(epoch: number = Date.now()): void {
   chatSessionEpoch = epoch;
   if (chatMessages.size > 0) {
     chatMessages.clear();
-    notifyChats();
+    syncChatsToStore();
   }
 }
 

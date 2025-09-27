@@ -86,7 +86,6 @@ export const App: Component = () => {
   });
 
   const chatSeenRef = new Map<string, string>();
-
   let lastAccountPubkey: string | null = null;
 
   createEffect(() => {
