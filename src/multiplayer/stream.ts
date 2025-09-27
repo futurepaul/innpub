@@ -240,11 +240,28 @@ function handleLoginCommand(npub: string, alias: string | null): void {
   pendingLocalIdentity = normalized;
   localAliasValue = alias;
 
+  if (normalized) {
+    trackProfile(normalized);
+  }
+
   const snapshot = gameStore.getSnapshot();
   if (snapshot.localPlayer && snapshot.localPlayer.npub === normalized) {
     gameStore.patchLocalPlayer({ alias: localAliasValue });
   } else if (localState && localState.npub === normalized) {
     syncPlayersToStore();
+  } else {
+    const placeholderPosition = localState?.position ?? { x: 0, y: 0 };
+    const placeholderRooms = localState?.rooms ?? [];
+    gameStore.setLocalPlayer({
+      npub: normalized,
+      position: { ...placeholderPosition },
+      facing: localState?.facing ?? 1,
+      rooms: [...placeholderRooms],
+      speakingLevel: 0,
+      updatedAt: Date.now(),
+      alias: localAliasValue,
+      avatarUrl: localAvatarUrlValue,
+    });
   }
 }
 
@@ -1216,6 +1233,20 @@ function trackProfile(npub: string) {
     .subscribe(profile => {
       profiles.set(npub, { npub, profile });
       syncProfilesToStore();
+
+      const localIdentity = localState?.npub ?? pendingLocalIdentity ?? localSession?.npub;
+      if (localIdentity && localIdentity === npub) {
+        const picture = profile ? getProfilePicture(profile) : null;
+        localAvatarUrlValue = picture ?? null;
+        const snapshot = gameStore.getSnapshot();
+        const existingAvatar = snapshot.localPlayer?.avatarUrl ?? null;
+        if (existingAvatar !== (picture ?? null)) {
+          gameStore.patchLocalPlayer({ avatarUrl: picture ?? null });
+          if (localState) {
+            syncPlayersToStore();
+          }
+        }
+      }
     });
 
   profileSubscriptions.set(npub, {

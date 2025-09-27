@@ -433,7 +433,8 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
   };
 
   const resolveLocalAvatarUrl = (): string | null => {
-    if (!currentLocalNpub) {
+    const identity = currentLocalNpub ?? store.getSnapshot().localPlayer?.npub ?? null;
+    if (!identity) {
       return null;
     }
 
@@ -442,9 +443,9 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
       return override;
     }
 
-    const profile = profileSnapshot.get(currentLocalNpub)?.profile;
+    const profile = profileSnapshot.get(identity)?.profile;
     const picture = profile ? getProfilePicture(profile) : undefined;
-    return (picture?.trim() || fallbackAvatarUrl(currentLocalNpub));
+    return picture?.trim() || fallbackAvatarUrl(identity);
   };
 
   const applyRemoteAvatar = (npub: string, managed: ManagedPlayer) => {
