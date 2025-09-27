@@ -1220,6 +1220,17 @@ function trackProfile(npub: string) {
     .subscribe(profile => {
       profiles.set(npub, { npub, profile });
       syncProfilesToStore();
+
+      const localIdentity = localState?.npub ?? pendingLocalIdentity ?? localSession?.npub;
+      if (localIdentity && localIdentity === npub) {
+        const picture = profile ? getProfilePicture(profile) : null;
+        localAvatarUrlValue = picture ?? null;
+        if (picture) {
+          gameStore.patchLocalPlayer({ avatarUrl: picture });
+        } else {
+          gameStore.patchLocalPlayer({ avatarUrl: null });
+        }
+      }
     });
 
   profileSubscriptions.set(npub, {
