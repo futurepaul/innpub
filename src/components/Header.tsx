@@ -1,5 +1,6 @@
 import { getDisplayName } from "applesauce-core/helpers";
-import { createMemo, Show, type Component } from "solid-js";
+import { createMemo, Show, type Component, from } from "solid-js";
+import { npubEncode } from "nostr-tools/nip19";
 import {
   getAudioState,
   getProfilePictureUrl,
@@ -8,17 +9,31 @@ import {
   type AudioControlState,
   type PlayerProfile
 } from "../multiplayer/stream";
+import { manager } from "../nostr/accounts";
+import { eventStore } from "../nostr/client";
 
 export interface HeaderProps {
-  pubkey: string | null;
-  npub: string | null;
-  localAlias: string | null;
   profileMap: Map<string, PlayerProfile>;
   audioState: AudioControlState;
   onLogout: () => void;
 }
 
 export const Header: Component<HeaderProps> = (props) => {
+  const activeAccount = from(manager.active$);
+
+  const pubkey = createMemo(() => activeAccount()?.pubkey || null);
+  const npub = createMemo(() => {
+    const pk = pubkey();
+    return pk ? npubEncode(pk) : null;
+  });
+
+  const profile = createMemo(() => {
+    const pk = pubkey();
+    if (!pk) return null;
+    const profileEvent = eventStore.profile(pk);
+    return from(profileEvent)();
+  });
+
   const handleToggleMic = async () => {
     if (!props.audioState.supported) {
       return;
@@ -34,21 +49,12 @@ export const Header: Component<HeaderProps> = (props) => {
     setSpeakerEnabled(!props.audioState.speakerEnabled);
   };
 
-  const localProfile = createMemo(() => {
-    const pk = props.pubkey;
-    return pk ? props.profileMap.get(pk)?.profile : undefined;
-  });
-
   const displayName = createMemo(() => {
-    if (props.localAlias)
-      return props.localAlias;
-
-    const profile = localProfile();
-    const name = profile ? getDisplayName(profile) : null;
-    if (name) {
-      return name;
+    const p = profile();
+    if (p) {
+      return getDisplayName(p);
     }
-    const currentNpub = props.npub;
+    const currentNpub = npub();
     if (currentNpub) {
       return `${currentNpub.slice(0, 12)}…`;
     }
@@ -56,17 +62,21 @@ export const Header: Component<HeaderProps> = (props) => {
   });
 
   const avatarUrl = createMemo(() => {
-    const pk = props.pubkey;
-    if (!pk) {
-      return null;
+    const p = profile();
+    const pk = pubkey();
+    if (p?.picture) {
+      return p.picture;
     }
-    return getProfilePictureUrl(pk) ?? null;
+    if (pk) {
+      return getProfilePictureUrl(pk) ?? `https://robohash.org/${pk}.png`;
+    }
+    return null;
   });
 
   return (
     <header class="status-bar">
       <Show
-        when={props.pubkey}
+        when={pubkey()}
         fallback={
           <div class="status-strip status-strip--placeholder">Sign in to explore the InnPub.</div>
         }
@@ -81,8 +91,8 @@ export const Header: Component<HeaderProps> = (props) => {
             </Show>
             <div class="status-strip__meta">
               <span class="status-strip__label">Logged in</span>
-              <span class="status-strip__name" title={props.npub ?? undefined}>
-                {displayName() ?? (props.npub ? `${props.npub.slice(0, 12)}…` : "Guest")}
+              <span class="status-strip__name" title={npub() ?? undefined}>
+                {displayName() ?? (npub() ? `${npub()!.slice(0, 12)}…` : "Guest")}
               </span>
             </div>
           </div>

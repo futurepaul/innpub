@@ -1,5 +1,6 @@
 import { getDisplayName } from "applesauce-core/helpers";
 import { npubEncode } from "nostr-tools/nip19";
+import { manager } from "./nostr/accounts";
 import { Application } from "pixi.js";
 import {
   createEffect,
@@ -281,6 +282,10 @@ export const App: Component = () => {
         return next;
       });
     }
+
+    // Clear the active account from the manager
+    manager.clearActive();
+
     pubkeyRef = null;
     setPubkey(null);
     setNpub(null);
@@ -375,9 +380,6 @@ export const App: Component = () => {
     <div class="app-shell">
       <div class="app-main">
         <Header
-          pubkey={pubkey()}
-          npub={npub()}
-          localAlias={localAlias()}
           profileMap={profileMap()}
           audioState={audioState()}
           onLogout={handleLogout}

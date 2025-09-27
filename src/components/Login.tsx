@@ -1,6 +1,56 @@
-import { ExtensionSigner } from "applesauce-signers";
-import { decode as decodeNip19 } from "nostr-tools/nip19";
-import { createSignal, Show, type Component } from "solid-js";
+import { ReadonlyAccount } from "applesauce-accounts/accounts";
+import { getDisplayName, normalizeToPubkey } from "applesauce-core/helpers";
+import { ExtensionSigner, ReadonlySigner } from "applesauce-signers";
+import { npubEncode } from "nostr-tools/nip19";
+import { createMemo, createSignal, For, from, Show, type Component } from "solid-js";
+import { manager } from "../nostr/accounts";
+import { eventStore } from "../nostr/client";
+
+interface AccountItemProps {
+  account: any;
+  onSelect: (account: any) => void;
+  onRemove: (account: any) => void;
+}
+
+const AccountItem: Component<AccountItemProps> = (props) => {
+  const profile = from(eventStore.profile(props.account.pubkey));
+
+  const avatarUrl = createMemo(() => {
+    const p = profile();
+    return p?.picture || `https://robohash.org/${props.account.pubkey}.png`;
+  });
+
+  const handleRemove = (e: Event) => {
+    e.stopPropagation();
+    props.onRemove(props.account);
+  };
+
+  return (
+    <div class="account-item">
+      <button
+        type="button"
+        class="account-select-btn"
+        onClick={() => props.onSelect(props.account)}
+      >
+        <div class="account-avatar">
+          <img src={avatarUrl()} alt={getDisplayName(profile())} />
+        </div>
+        <div class="account-info">
+          <div class="account-name">{getDisplayName(profile())}</div>
+          <div class="account-pubkey">{npubEncode(props.account.pubkey).slice(0, 12)}…</div>
+        </div>
+      </button>
+      <button
+        type="button"
+        class="account-remove-btn"
+        onClick={handleRemove}
+        title="Remove account"
+      >
+        ×
+      </button>
+    </div>
+  );
+};
 
 export interface LoginProps {
   /** Function called when login is successful */
@@ -11,37 +61,44 @@ export const Login: Component<LoginProps> = (props) => {
   const [npubInputValue, setNpubInputValue] = createSignal("");
   const [loginError, setLoginError] = createSignal<string | null>(null);
   const [loginPending, setLoginPending] = createSignal(false);
+  const accounts = from(manager.accounts$)
 
   const resolvePubkey = (input: string): string => {
     const trimmed = input.trim();
-    if (!trimmed) {
+    if (!trimmed)
       throw new Error("Enter a public key");
-    }
 
-    if (/^npub/i.test(trimmed)) {
-      const decoded = decodeNip19(trimmed);
-      if (decoded.type !== "npub") {
-        throw new Error("Unsupported NIP-19 format");
-      }
-      const data = decoded.data;
-      if (typeof data !== "string") {
-        throw new Error("Invalid npub payload");
-      }
-      return data.toLowerCase();
-    }
-
-    if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
-      return trimmed.toLowerCase();
-    }
-
-    throw new Error("Invalid public key");
+    return normalizeToPubkey(trimmed)
   };
 
-  const handleManualLogin = (event: Event) => {
+  const handleAccountSelect = (account: any) => {
+    manager.setActive(account);
+    props.onLogin(account.pubkey);
+  };
+
+  const handleAccountRemove = (account: any) => {
+    manager.removeAccount(account);
+  };
+
+  const handleManualLogin = async (event: Event) => {
     event.preventDefault();
     try {
       const pubkeyHex = resolvePubkey(npubInputValue());
+
+      // Check if account already exists
+      let account = manager.getAccountForPubkey(pubkeyHex);
+
+      if (!account) {
+        // Create new ReadonlyAccount
+        const signer = new ReadonlySigner(pubkeyHex);
+        account = new ReadonlyAccount(pubkeyHex, signer);
+        manager.addAccount(account);
+      }
+
+      // Set as active account
+      manager.setActive(account);
       props.onLogin(pubkeyHex);
+
       // Reset form state on successful login
       setNpubInputValue("");
       setLoginError(null);
@@ -82,6 +139,25 @@ export const Login: Component<LoginProps> = (props) => {
           Realtime audio and position over WebTransport. Enter a room to join that room's audio channel.
           Chrome required for audio to work.
         </p>
+
+        <Show when={(accounts() || []).length > 0}>
+          <div class="existing-accounts">
+            <h3>Existing Accounts</h3>
+            <div class="account-list">
+              <For each={accounts() || []}>
+                {(account) => (
+                  <AccountItem
+                    account={account}
+                    onSelect={handleAccountSelect}
+                    onRemove={handleAccountRemove}
+                  />
+                )}
+              </For>
+            </div>
+          </div>
+          <div class="login-divider">or</div>
+        </Show>
+
         <form class="login-form" onSubmit={handleManualLogin}>
           <input
             type="text"
