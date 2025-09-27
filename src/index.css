@@ -95,7 +95,9 @@ body {
 }
 
 .status-strip--placeholder {
+  display: flex;
   justify-content: center;
+  align-items: center;
   font-size: 0.95rem;
   color: var(--text-soft);
 }
@@ -142,6 +144,7 @@ body {
   display: flex;
   gap: 6px;
   align-items: center;
+  flex-wrap: wrap;
 }
 
 .status-strip__btn {
@@ -377,14 +380,12 @@ body {
   color: var(--text-soft);
 }
 
-.login-form,
-.guest-form {
+.login-form {
   display: flex;
   gap: 10px;
 }
 
-.login-form input,
-.guest-form input {
+.login-form input {
   flex: 1 1 auto;
   background: rgba(10, 18, 32, 0.95);
   border: 1px solid rgba(152, 188, 255, 0.45);
@@ -396,7 +397,6 @@ body {
 }
 
 .login-form button,
-.guest-form button,
 .ext-login {
   background: rgba(28, 44, 70, 0.92);
   border: 1px solid rgba(152, 188, 255, 0.55);
@@ -412,7 +412,6 @@ body {
 }
 
 .login-form button:hover:not(:disabled),
-.guest-form button:hover:not(:disabled),
 .ext-login:hover:not(:disabled) {
   background: rgba(40, 58, 88, 0.95);
   border-color: var(--panel-border-strong);
@@ -426,28 +425,6 @@ body {
 
 .ext-login {
   width: 100%;
-}
-
-.login-divider {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  color: rgba(152, 188, 255, 0.4);
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  font-size: 0.75rem;
-}
-
-.login-divider::before,
-.login-divider::after {
-  content: "";
-  flex: 1 1 auto;
-  height: 1px;
-  background: rgba(152, 188, 255, 0.35);
-}
-
-.login-divider span {
-  flex: 0 0 auto;
 }
 
 .login-error {
@@ -473,7 +450,7 @@ body {
 
 .avatar-head.is-speaking {
   border-color: var(--panel-accent);
-  box-shadow: 0 0 0 2px rgba(116, 220, 152, 0.35), 0 0 14px rgba(116, 220, 152, 0.35);
+  box-shadow: 0 0 0 2px rgba(116, 220, 152, 0.45), 0 0 22px rgba(116, 220, 152, 0.3);
 }
 
 .avatar-head img {
