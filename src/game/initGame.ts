@@ -415,6 +415,7 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
         slot.instance = avatar;
         slot.currentUrl = normalized;
         slot.placeholder.visible = false;
+        console.debug("avatar sprite applied", normalized);
       } catch (error) {
         if (requestId === slot.requestId) {
           console.warn("Failed to load avatar sprite", normalized, error);
@@ -947,6 +948,12 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
     const avatarOverride = playerState?.avatarUrl ?? null;
     const identityChanged = currentLocalNpub !== previousNpub;
 
+    console.debug("localPlayer$ update", {
+      currentLocalNpub,
+      avatarOverride,
+      identityChanged,
+    });
+
     if (identityChanged || avatarOverride !== localAvatarOverride) {
       updateLocalAvatar(avatarOverride);
     }
@@ -969,6 +976,7 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
     if (resolved !== localResolvedAvatar) {
       localResolvedAvatar = resolved;
       setAvatarOnSlot(localHeadSlot, resolved);
+      console.debug("profile subscription applied avatar", resolved);
     }
 
     for (const [npub, managed] of remotePlayers) {
