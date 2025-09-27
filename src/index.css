@@ -427,10 +427,159 @@ body {
   width: 100%;
 }
 
+.bunker-login {
+  background: rgba(28, 44, 70, 0.92);
+  border: 1px solid rgba(152, 188, 255, 0.55);
+  border-radius: 10px;
+  color: var(--text-strong);
+  padding: 10px 14px;
+  font-family: "DotGothic16", monospace;
+  font-size: 0.95rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
+  width: 100%;
+}
+
+.bunker-login:hover:not(:disabled) {
+  background: rgba(40, 58, 88, 0.95);
+  border-color: var(--panel-border-strong);
+}
+
+.bunker-login:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .login-error {
   font-size: 0.85rem;
   color: #ff8a8a;
   text-shadow: none;
+}
+
+.existing-accounts {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.existing-accounts h3 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
+.account-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.account-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(10, 18, 32, 0.95);
+  border: 1px solid rgba(152, 188, 255, 0.35);
+  border-radius: 10px;
+  transition: all 0.15s ease;
+  width: 100%;
+}
+
+.account-item:hover {
+  background: rgba(20, 28, 42, 0.95);
+  border-color: var(--panel-border-strong);
+}
+
+.account-select-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background: transparent;
+  border: none;
+  color: var(--text-strong);
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  flex: 1;
+  border-radius: 10px;
+  transition: all 0.15s ease;
+}
+
+.account-select-btn:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.account-remove-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: transparent;
+  border: 1px solid rgba(255, 100, 100, 0.4);
+  border-radius: 6px;
+  color: #ff6b6b;
+  font-family: inherit;
+  font-size: 18px;
+  font-weight: bold;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  margin-right: 8px;
+  flex-shrink: 0;
+}
+
+.account-remove-btn:hover {
+  background: rgba(255, 100, 100, 0.1);
+  border-color: rgba(255, 100, 100, 0.6);
+  color: #ff5555;
+}
+
+.account-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.account-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.account-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.account-name {
+  font-size: 1rem;
+  font-weight: 500;
+  color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-pubkey {
+  font-size: 0.85rem;
+  font-family: "DotGothic16", monospace;
+  color: var(--text-soft);
+}
+
+.login-divider {
+  text-align: center;
+  color: var(--text-soft);
+  font-size: 0.9rem;
+  margin: 4px 0;
 }
 
 .avatar-head {
@@ -522,4 +671,153 @@ body {
   .console-region {
     padding: 12px 14px;
   }
+}
+
+/* Bunker signer view styles */
+.bunker-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.back-btn {
+  background: transparent;
+  border: 1px solid rgba(152, 188, 255, 0.35);
+  border-radius: 8px;
+  color: var(--text-strong);
+  padding: 8px 12px;
+  font-family: "DotGothic16", monospace;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.back-btn:hover {
+  background: rgba(20, 28, 42, 0.95);
+  border-color: var(--panel-border-strong);
+}
+
+.bunker-login-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.bunker-login-section h3 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
+.bunker-url-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.bunker-url-form input {
+  background: rgba(10, 18, 32, 0.95);
+  border: 1px solid rgba(152, 188, 255, 0.35);
+  border-radius: 8px;
+  color: var(--text-strong);
+  padding: 12px;
+  font-family: "DotGothic16", monospace;
+  font-size: 0.9rem;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.bunker-url-form input:focus {
+  outline: none;
+  border-color: var(--panel-border-strong);
+  background: rgba(15, 23, 37, 0.95);
+}
+
+.bunker-url-form input::placeholder {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.bunker-url-form button,
+.qr-login-btn {
+  background: rgba(28, 44, 70, 0.92);
+  border: 1px solid rgba(152, 188, 255, 0.55);
+  border-radius: 8px;
+  color: var(--text-strong);
+  padding: 10px 14px;
+  font-family: "DotGothic16", monospace;
+  font-size: 0.95rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.2s ease, border-color 0.2s ease;
+  width: 100%;
+}
+
+.bunker-url-form button:hover:not(:disabled),
+.qr-login-btn:hover:not(:disabled) {
+  background: rgba(40, 58, 88, 0.95);
+  border-color: var(--panel-border-strong);
+}
+
+.bunker-url-form button:disabled,
+.qr-login-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* QR Code styles */
+.qr-code-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  text-align: center;
+}
+
+.qr-instruction {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--text-strong);
+  opacity: 0.8;
+}
+
+.qr-code-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 12px;
+  border: 2px solid rgba(152, 188, 255, 0.35);
+  transition: all 0.2s ease;
+}
+
+.qr-code-container:hover {
+  border-color: var(--panel-border-strong);
+}
+
+.qr-code-image {
+  width: 200px;
+  height: 200px;
+  display: block;
+}
+
+.cancel-btn {
+  background: transparent;
+  border: 1px solid rgba(255, 100, 100, 0.4);
+  border-radius: 8px;
+  color: #ff8a8a;
+  padding: 8px 16px;
+  font-family: "DotGothic16", monospace;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.cancel-btn:hover {
+  background: rgba(255, 100, 100, 0.1);
+  border-color: rgba(255, 100, 100, 0.6);
 }

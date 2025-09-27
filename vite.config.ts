@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
+import solidPlugin from 'vite-plugin-solid';
+import devtools from 'solid-devtools/vite';
 
 const CROSS_ORIGIN_HEADERS: Record<string, string> = {
   "Cross-Origin-Opener-Policy": "same-origin",
@@ -7,7 +8,11 @@ const CROSS_ORIGIN_HEADERS: Record<string, string> = {
 };
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [devtools(), solidPlugin()],
+  build: {
+    target: 'esnext',
+    sourcemap: true,
+  },
   server: {
     port: 3000,
     headers: CROSS_ORIGIN_HEADERS,

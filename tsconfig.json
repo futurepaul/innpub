@@ -5,8 +5,11 @@
     "target": "ESNext",
     "module": "Preserve",
     "moduleDetection": "force",
-    "jsx": "react-jsx",
     "allowJs": true,
+
+    // SolidJS
+    "jsx": "preserve",
+    "jsxImportSource": "solid-js",
 
     // Bundler mode
     "moduleResolution": "bundler",

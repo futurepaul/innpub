@@ -7,11 +7,23 @@ import { decode as decodeNip19 } from "nostr-tools/nip19";
 
 import { DEFAULT_RELAYS, eventStore } from "../nostr/client";
 import {
+  GameStore,
+  ROOM_PROTOCOL_VERSION,
+  type AudioState as StoreAudioState,
+  type ChatEntry as StoreChatEntry,
+  type GameCommand,
+  type PlayerTransform,
+  type LocalPlayerState as StoreLocalPlayerState,
+  type PlayerProfileEntry,
+  type RemotePlayerState as StoreRemotePlayerState,
+} from "../game/state";
+import {
   ensureConnection,
   getConnection,
   onConnection,
   onDisconnect,
   shutdownConnection,
+  RELAY_URL,
   PLAYERS_PREFIX,
   STATE_TRACK,
   ROOMS_TRACK,
@@ -41,11 +53,6 @@ export interface ChatMessage {
   ts: number;
   expiresAt: number;
 }
-
-type PlayerListener = (state: PlayerState[]) => void;
-type ProfileListener = (profiles: Map<string, PlayerProfile>) => void;
-type AudioStateListener = (state: AudioControlState) => void;
-type ChatListener = (messages: Map<string, ChatMessage>) => void;
 
 interface RemoteSubscription {
   path: Moq.Path.Valid;
@@ -83,11 +90,6 @@ interface FrameProducerState {
   producer: Hang.Frame.Producer;
   keyframeSent: boolean;
 }
-
-const listeners = new Set<PlayerListener>();
-const profileListeners = new Set<ProfileListener>();
-const audioStateListeners = new Set<AudioStateListener>();
-const chatListeners = new Set<ChatListener>();
 
 const players = new Map<string, PlayerState>();
 const stateBySource = new Map<string, PlayerState>();
@@ -128,12 +130,172 @@ let beforeUnloadRegistered = false;
 let localRooms: string[] = [];
 let chatCounter = 0;
 
+export const gameStore = new GameStore();
+
+let localAliasValue: string | null = null;
+let localAvatarUrlValue: string | null = null;
+
+function toStoreRemotePlayer(state: PlayerState): StoreRemotePlayerState {
+  return {
+    npub: state.npub,
+    position: { x: state.x, y: state.y },
+    facing: state.facing,
+    rooms: state.rooms ? [...state.rooms] : [],
+    speakingLevel: state.speakingLevel ?? 0,
+    updatedAt: Date.now(),
+  };
+}
+
+function toStoreLocalPlayer(state: PlayerState): StoreLocalPlayerState {
+  return {
+    npub: state.npub,
+    position: { x: state.x, y: state.y },
+    facing: state.facing,
+    rooms: state.rooms ? [...state.rooms] : [...localRooms],
+    speakingLevel: state.speakingLevel ?? 0,
+    updatedAt: Date.now(),
+    alias: localAliasValue,
+    avatarUrl: localAvatarUrlValue,
+  };
+}
+
+function syncPlayersToStore(): void {
+  const snapshot = Array.from(players.values());
+  const local = localState ? toStoreLocalPlayer(localState) : null;
+  const remotes: StoreRemotePlayerState[] = [];
+  for (const entry of snapshot) {
+    if (localState && entry.npub === localState.npub) {
+      continue;
+    }
+    remotes.push(toStoreRemotePlayer(entry));
+  }
+
+  gameStore.setRemotePlayers(remotes);
+  gameStore.setLocalPlayer(local);
+}
+
+function syncProfilesToStore(): void {
+  const entries: PlayerProfileEntry[] = [];
+  for (const profile of profiles.values()) {
+    entries.push({ npub: profile.npub, profile: profile.profile });
+  }
+  gameStore.setProfiles(entries);
+}
+
+function syncAudioStateToStore(): void {
+  const next: StoreAudioState = { ...audioState };
+  gameStore.setAudioState(next);
+}
+
+function syncChatsToStore(): void {
+  const entries: StoreChatEntry[] = [];
+  for (const entry of chatMessages.values()) {
+    entries.push({ ...entry });
+  }
+  gameStore.setChat(entries);
+}
+
+const commandSubscription = gameStore.commands$.subscribe(handleGameCommand);
+
+function handleGameCommand(command: GameCommand): void {
+  switch (command.type) {
+    case "login":
+      handleLoginCommand(command.npub, command.alias ?? null);
+      break;
+    case "logout":
+      handleLogoutCommand();
+      break;
+    case "set-local-transform":
+      handleLocalTransformCommand(command.transform);
+      break;
+    case "set-local-rooms":
+      updateLocalRooms(command.rooms);
+      break;
+    case "set-avatar":
+      handleSetAvatarCommand(command.url ?? null);
+      break;
+    case "send-chat":
+      void handleSendChatCommand(command.message).catch(error => {
+        console.error("failed to send chat via command", error);
+      });
+      break;
+    case "toggle-mic":
+      void setMicrophoneEnabled(command.enabled).catch(error => {
+        console.error("failed to toggle microphone via command", error);
+      });
+      break;
+    case "toggle-speaker":
+      setSpeakerEnabled(command.enabled);
+      break;
+    case "request-spawn":
+      handleSpawnRequest();
+      break;
+    default:
+      break;
+  }
+}
+
+function handleLoginCommand(npub: string, alias: string | null): void {
+  const normalized = normalizeIdentifier(npub) ?? npub;
+  pendingLocalIdentity = normalized;
+  localAliasValue = alias;
+
+  const snapshot = gameStore.getSnapshot();
+  if (snapshot.localPlayer && snapshot.localPlayer.npub === normalized) {
+    gameStore.patchLocalPlayer({ alias: localAliasValue });
+  } else if (localState && localState.npub === normalized) {
+    syncPlayersToStore();
+  }
+}
+
+function handleLogoutCommand(): void {
+  const identity = localState?.npub ?? pendingLocalIdentity ?? localSession?.npub;
+  if (identity) {
+    removePlayer(identity);
+  } else {
+    localAliasValue = null;
+    localAvatarUrlValue = null;
+    pendingLocalIdentity = null;
+    gameStore.setLocalPlayer(null);
+    gameStore.setLocalRooms([]);
+  }
+}
+
+function handleLocalTransformCommand(transform: PlayerTransform): void {
+  const identity = localState?.npub ?? pendingLocalIdentity ?? localSession?.npub;
+  if (!identity) {
+    console.warn("ignoring transform command without identity");
+    return;
+  }
+  updateLocalPlayer({
+    npub: identity,
+    x: transform.position.x,
+    y: transform.position.y,
+    facing: transform.facing,
+  });
+}
+
+function handleSetAvatarCommand(url: string | null): void {
+  localAvatarUrlValue = url;
+  const snapshot = gameStore.getSnapshot();
+  if (snapshot.localPlayer) {
+    gameStore.patchLocalPlayer({ avatarUrl: localAvatarUrlValue });
+  }
+}
+
+async function handleSendChatCommand(message: string): Promise<void> {
+  await sendChatMessage(message);
+}
+
+function handleSpawnRequest(): void {
+  // Placeholder: spawn behaviour is handled within the Pixi renderer.
+}
+
 const hangConnectionSignal = new Signal<Moq.Connection.Established | undefined>(undefined);
 const hangBroadcastPath = new Signal<Moq.Path.Valid | undefined>(undefined);
 const hangPublishEnabled = new Signal(false);
 const roomAudioSubscriptions = new Map<string, RoomAudioSubscription>();
 const remoteAudioSessions = new Map<Moq.Path.Valid, RemoteAudioSession>();
-const ROOM_PROTOCOL_VERSION = "v2";
 
 const AUDIO_SESSION_SUFFIX = Math.random().toString(36).slice(2, 8);
 const hangPublish =
@@ -199,19 +361,9 @@ let audioState: AudioControlState = {
   supported: audioSupported,
 };
 
-function notifyAudioState() {
-  for (const listener of audioStateListeners) {
-    try {
-      listener(audioState);
-    } catch (error) {
-      console.error("audio state listener failed", error);
-    }
-  }
-}
-
 function setAudioState(patch: Partial<AudioControlState>) {
   audioState = { ...audioState, ...patch };
-  notifyAudioState();
+  syncAudioStateToStore();
 }
 
 function isResetStreamError(error: unknown): boolean {
@@ -262,17 +414,24 @@ function buildAudioBroadcastPath(room: string, npub: string): Moq.Path.Valid {
   return Moq.Path.from("innpub", "rooms", ROOM_PROTOCOL_VERSION, normalizedRoom, normalizedNpub, AUDIO_SESSION_SUFFIX);
 }
 
-function parseAudioBroadcastPath(path: Moq.Path.Valid): { room?: string; npub?: string } {
-  const base = Moq.Path.from("innpub", "rooms", ROOM_PROTOCOL_VERSION);
+function parseAudioBroadcastPath(path: Moq.Path.Valid): { room: string; npub?: string } {
+  const base = Moq.Path.from("innpub", "rooms");
   const suffix = Moq.Path.stripPrefix(base, path);
   if (suffix === null) {
-    return {};
+    throw new Error(`unsupported audio broadcast path: ${path}`);
   }
   const segments = suffix.split("/").filter(Boolean);
   if (segments.length < 2) {
-    return { room: segments[0] };
+    throw new Error(`incomplete audio broadcast path: ${path}`);
   }
-  return { room: segments[0], npub: segments[1] };
+  const [version, room, npub] = segments;
+  if (version !== ROOM_PROTOCOL_VERSION) {
+    throw new Error(`unsupported room protocol version ${version} (expected ${ROOM_PROTOCOL_VERSION})`);
+  }
+  if (!room) {
+    throw new Error(`missing room identifier in path: ${path}`);
+  }
+  return { room, npub };
 }
 
 async function ensureMicrophoneTrack(): Promise<void> {
@@ -409,7 +568,38 @@ function handleRemoteAudioAdded(room: string, path: Moq.Path.Valid, broadcast: H
     return;
   }
 
-  const { npub } = parseAudioBroadcastPath(path);
+  let parsed: { room: string; npub?: string };
+  try {
+    parsed = parseAudioBroadcastPath(path);
+  } catch (error) {
+    console.error("ignoring remote audio with incompatible path", { path: path.toString(), error });
+    try {
+      broadcast.enabled.set(false);
+      broadcast.audio.enabled.set(false);
+    } catch {}
+    try {
+      broadcast.close?.();
+    } catch {}
+    return;
+  }
+
+  if (parsed.room !== room) {
+    console.error("ignoring remote audio with mismatched room", {
+      expected: room,
+      received: parsed.room,
+      path: path.toString(),
+    });
+    try {
+      broadcast.enabled.set(false);
+      broadcast.audio.enabled.set(false);
+    } catch {}
+    try {
+      broadcast.close?.();
+    } catch {}
+    return;
+  }
+
+  const { npub } = parsed;
   const emitter = new Hang.Watch.Audio.Emitter(broadcast.audio, {
     muted: !speakerEnabled,
     paused: !speakerEnabled,
@@ -537,7 +727,7 @@ function pruneChatMessages() {
     }
   }
   if (mutated) {
-    notifyChats();
+    syncChatsToStore();
   }
 }
 
@@ -688,7 +878,7 @@ function setSpeakingLevel(npub: string, level: number) {
     players.set(npub, { ...current, speakingLevel: level });
   }
 
-  notifyPlayers();
+  syncPlayersToStore();
 }
 
 function clearSpeakingLevel(npub: string) {
@@ -714,7 +904,7 @@ function clearSpeakingLevel(npub: string) {
     players.set(npub, stripSpeaking(current));
   }
 
-  notifyPlayers();
+  syncPlayersToStore();
 }
 
 function normalizeRooms(rooms: readonly string[]): string[] {
@@ -775,7 +965,7 @@ function setRooms(npub: string, rooms: readonly string[]): void {
     players.set(npub, normalized.length > 0 ? { ...current, rooms: normalized } : stripRooms(current));
   }
 
-  notifyPlayers();
+  syncPlayersToStore();
   updateAudioMix();
 }
 
@@ -803,7 +993,7 @@ function clearRooms(npub: string): void {
     players.set(npub, stripRooms(current));
   }
 
-  notifyPlayers();
+  syncPlayersToStore();
   updateAudioMix();
 }
 
@@ -840,7 +1030,7 @@ function addSourceState(sourceKey: string, state: PlayerState) {
   bucket.add(sourceKey);
   players.set(state.npub, enriched);
   trackProfile(state.npub);
-  notifyPlayers();
+  syncPlayersToStore();
 }
 
 function removeSource(sourceKey: string) {
@@ -872,26 +1062,13 @@ function removeSource(sourceKey: string) {
     cleanupProfileIfOrphan(existing.npub);
   }
 
-  notifyPlayers();
+  syncPlayersToStore();
 }
 
 function clearRemoteSources() {
   const keys = [...stateBySource.keys()].filter(key => key.startsWith("remote:"));
   for (const key of keys) {
     removeSource(key);
-  }
-}
-
-function notifyPlayers() {
-  const snapshot = Array.from(players.values());
-  for (const listener of listeners) {
-    listener(snapshot);
-  }
-}
-
-function notifyProfiles() {
-  for (const listener of profileListeners) {
-    listener(profiles);
   }
 }
 
@@ -977,28 +1154,17 @@ function clearResetErrorCounts(prefix: string): void {
   }
 }
 
-function notifyChats() {
-  const snapshot = new Map(chatMessages);
-  for (const listener of chatListeners) {
-    try {
-      listener(snapshot);
-    } catch (error) {
-      console.error("chat listener failed", error);
-    }
-  }
-}
-
 function setChatEntry(entry: ChatMessage) {
   if (entry.ts < chatSessionEpoch) {
     return;
   }
   chatMessages.set(entry.npub, entry);
-  notifyChats();
+  syncChatsToStore();
 }
 
 function clearChatEntry(npub: string) {
   if (chatMessages.delete(npub)) {
-    notifyChats();
+    syncChatsToStore();
   }
 }
 
@@ -1049,7 +1215,7 @@ function trackProfile(npub: string) {
     .profile({ pubkey: hexPubkey ?? npub, relays: DEFAULT_RELAYS })
     .subscribe(profile => {
       profiles.set(npub, { npub, profile });
-      notifyProfiles();
+      syncProfilesToStore();
     });
 
   profileSubscriptions.set(npub, {
@@ -1058,7 +1224,7 @@ function trackProfile(npub: string) {
 
   if (!profiles.has(npub)) {
     profiles.set(npub, { npub });
-    notifyProfiles();
+    syncProfilesToStore();
   }
 }
 
@@ -1066,7 +1232,7 @@ function untrackProfile(npub: string) {
   profileSubscriptions.get(npub)?.unsubscribe();
   profileSubscriptions.delete(npub);
   profiles.delete(npub);
-  notifyProfiles();
+  syncProfilesToStore();
 }
 
 function normalizeIdentifier(value: unknown): string | null {
@@ -1233,6 +1399,12 @@ function runPublishLoop(broadcast: Moq.Broadcast) {
 }
 
 function handleConnected(connection: Moq.Connection.Established) {
+  gameStore.setConnection({
+    status: "connected",
+    relayUrl: RELAY_URL,
+    error: undefined,
+    lastConnectedAt: Date.now(),
+  });
   hangConnectionSignal.set(connection);
   announcementAbort?.abort();
   announcementAbort = new AbortController();
@@ -1246,6 +1418,10 @@ function handleConnected(connection: Moq.Connection.Established) {
 }
 
 function handleDisconnected() {
+  gameStore.patchConnection({
+    status: started ? "connecting" : "idle",
+    relayUrl: RELAY_URL,
+  });
   hangConnectionSignal.set(undefined);
   announcementAbort?.abort();
   announcementAbort = null;
@@ -1279,7 +1455,7 @@ function handleDisconnected() {
   releaseMicrophoneTrack();
   if (chatMessages.size > 0) {
     chatMessages.clear();
-    notifyChats();
+    syncChatsToStore();
   }
 }
 
@@ -1702,43 +1878,19 @@ function stopPruneTimer() {
   }
 }
 
-export function subscribe(callback: PlayerListener) {
-  listeners.add(callback);
-  callback(Array.from(players.values()));
-  return () => {
-    listeners.delete(callback);
-  };
-}
-
-export function subscribeProfiles(callback: ProfileListener) {
-  profileListeners.add(callback);
-  callback(profiles);
-  return () => {
-    profileListeners.delete(callback);
-  };
-}
-
-export function subscribeAudioState(callback: AudioStateListener) {
-  audioStateListeners.add(callback);
-  callback(audioState);
-  return () => {
-    audioStateListeners.delete(callback);
-  };
-}
-
-export function subscribeChats(callback: ChatListener) {
-  chatListeners.add(callback);
-  callback(new Map(chatMessages));
-  return () => {
-    chatListeners.delete(callback);
-  };
-}
-
 export function startStream() {
   if (started) {
     return;
   }
   started = true;
+
+  const previous = gameStore.getSnapshot().connection.lastConnectedAt;
+  gameStore.setConnection({
+    status: "connecting",
+    relayUrl: RELAY_URL,
+    error: undefined,
+    lastConnectedAt: previous,
+  });
 
   ensureBeforeUnloadHook();
   updateRoomAudioSubscriptions();
@@ -1749,6 +1901,11 @@ export function startStream() {
   startPruneTimer();
   void ensureConnection().catch(error => {
     console.error("failed to connect to moq", error);
+    gameStore.patchConnection({
+      status: "error",
+      relayUrl: RELAY_URL,
+      error: error instanceof Error ? error.message : String(error),
+    });
   });
 }
 
@@ -1757,6 +1914,13 @@ export function stopStream() {
     return;
   }
   started = false;
+
+  gameStore.setConnection({
+    status: "idle",
+    relayUrl: RELAY_URL,
+    error: undefined,
+    lastConnectedAt: gameStore.getSnapshot().connection.lastConnectedAt,
+  });
 
   stopPruneTimer();
 
@@ -1774,7 +1938,7 @@ export function resetChatSession(epoch: number = Date.now()): void {
   chatSessionEpoch = epoch;
   if (chatMessages.size > 0) {
     chatMessages.clear();
-    notifyChats();
+    syncChatsToStore();
   }
 }
 
@@ -1801,6 +1965,7 @@ export function updateLocalRooms(rooms: string[]): void {
     localState = { ...localState, rooms: normalized };
     stateBySource.set(LOCAL_SOURCE_KEY, localState);
   }
+  gameStore.setLocalRooms(normalized);
   const npub = localState?.npub;
   if (npub) {
     setRooms(npub, normalized);
@@ -1824,9 +1989,13 @@ export function removePlayer(npub: string) {
     pendingLocalIdentity = null;
     localRooms = [];
     currentAudioRoom = null;
+    localAliasValue = null;
+    localAvatarUrlValue = null;
     removeSource(LOCAL_SOURCE_KEY);
     void stopMicrophoneCapture();
     updateRoomAudioSubscriptions();
+    gameStore.setLocalPlayer(null);
+    gameStore.setLocalRooms([]);
   }
 
   untrackProfile(npub);
