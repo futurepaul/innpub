@@ -25,6 +25,7 @@ export interface ConsoleProps {
 export const Console: Component<ConsoleProps> = (props) => {
   let consoleInputRef: HTMLInputElement | undefined;
   let consoleLogRef: HTMLDivElement | undefined;
+  let consoleRegionRef: HTMLElement | undefined;
 
   const [inputMode, setInputMode] = createSignal<"command" | "chat" | null>(null);
   const [consoleInput, setConsoleInput] = createSignal("/");
@@ -183,9 +184,35 @@ export const Console: Component<ConsoleProps> = (props) => {
   const visibleLogs = createMemo(() => lines().length > 0 ? lines() : [statusMessage()]);
   const consoleRegionClass = createMemo(() => `console-region${consoleOpen() ? " is-open" : ""}`);
 
+  createEffect(() => {
+    if (!consoleOpen()) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!consoleRegionRef) {
+        return;
+      }
+      if (consoleRegionRef.contains(event.target as Node)) {
+        return;
+      }
+
+      setConsoleInput("/");
+      setInputMode(null);
+      setConsoleFocusReason(null);
+      props.onSetInputCaptured(false);
+    };
+
+    window.addEventListener("pointerdown", handlePointerDown, { capture: true });
+    onCleanup(() => window.removeEventListener("pointerdown", handlePointerDown, { capture: true }));
+  });
+
   return (
     <section
       class={consoleRegionClass()}
+      ref={element => {
+        consoleRegionRef = element ?? undefined;
+      }}
       onClick={consoleOpen() ? undefined : handleConsoleTap}
       role="presentation"
     >

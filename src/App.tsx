@@ -163,7 +163,7 @@ export const App: Component = () => {
     const parent = containerRef.parentElement as HTMLElement | null;
     const availableWidth = parent ? parent.clientWidth : window.innerWidth;
     const pointerFine = window.matchMedia?.("(pointer: fine)").matches ?? false;
-    const heightRatio = pointerFine ? 0.88 : 0.9;
+    const heightRatio = pointerFine ? 0.88 : 0.7;
     const maxHeight = Math.max(240, window.innerHeight * heightRatio);
 
     let targetWidth = availableWidth;
