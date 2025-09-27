@@ -12,8 +12,7 @@ import {
   Show,
   type Component,
 } from "solid-js";
-
-import { Console, Dpad, Header, Login } from "./components";
+import { Console, Dpad, Header, Login, PlayersDrawer } from "./components";
 import { initGame, type GameInstance } from "./game/initGame";
 import "./index.css";
 import { createObservableSignal } from "./ui/useObservable";
@@ -59,6 +58,7 @@ export const App: Component = () => {
   const pubkey = createMemo(() => activeAccount()?.pubkey?.toLowerCase() ?? null);
   const [npub, setNpub] = createSignal<string | null>(null);
   const [localAlias, setLocalAlias] = createSignal<string | null>(null);
+  const [isPlayersDrawerOpen, setIsPlayersDrawerOpen] = createSignal(false);
 
   const audioState = createObservableSignal<AudioState>(gameStore.audio$, gameStore.getSnapshot().audio);
   const chatMap = createObservableSignal<ReadonlyMap<string, ChatEntry>>(gameStore.chat$, gameStore.getSnapshot().chat);
@@ -294,6 +294,7 @@ export const App: Component = () => {
           profileMap={profileMap()}
           audioState={audioState()}
           onLogout={handleLogout}
+          onTogglePlayersDrawer={() => setIsPlayersDrawerOpen(!isPlayersDrawerOpen())}
         />
 
         <div class="game-container">
@@ -340,6 +341,12 @@ export const App: Component = () => {
         </Show>
         <Dpad visible={!showLoginOverlay()} />
       </div>
+      <PlayersDrawer
+        isOpen={isPlayersDrawerOpen()}
+        onClose={() => setIsPlayersDrawerOpen(false)}
+        players={Array.from(remotePlayers().values())}
+        currentPlayerNpub={pubkey()}
+      />
     </div>
   );
 };
