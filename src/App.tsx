@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 
 import "./index.css";
 import { initGame, type GameInstance } from "./game/initGame";
@@ -7,6 +7,7 @@ import { Application } from "pixi.js";
 import { ExtensionSigner } from "applesauce-signers";
 import { getDisplayName } from "applesauce-core/helpers";
 import { decode as decodeNip19, npubEncode } from "nostr-tools/nip19";
+import { generateSecretKey, getPublicKey } from "nostr-tools";
 import {
   startStream,
   stopStream,
@@ -29,6 +30,15 @@ import {
   type ChatMessage,
 } from "./multiplayer/stream";
 
+type DirectionKey = "up" | "down" | "left" | "right";
+
+const DIRECTION_KEY_MAP: Record<DirectionKey, string> = {
+  up: "ArrowUp",
+  down: "ArrowDown",
+  left: "ArrowLeft",
+  right: "ArrowRight",
+};
+
 export function App() {
   const containerRef = useRef<HTMLDivElement>(null);
   const consoleInputRef = useRef<HTMLInputElement>(null);
@@ -38,22 +48,23 @@ export function App() {
   const pubkeyRef = useRef<string | null>(null);
   const remotePlayersRef = useRef<PlayerState[]>([]);
 
-  const [playerPosition, setPlayerPosition] = useState({ x: 0, y: 0 });
   const [playerRooms, setPlayerRooms] = useState<string[]>([]);
   const [logMessages, setLogMessages] = useState<string[]>([]);
   const [inputMode, setInputMode] = useState<"command" | "chat" | null>(null);
   const [consoleInput, setConsoleInput] = useState("/");
   const [pubkey, setPubkey] = useState<string | null>(null);
   const [npub, setNpub] = useState<string | null>(null);
+  const [localAlias, setLocalAlias] = useState<string | null>(null);
   const [npubInputValue, setNpubInputValue] = useState("");
   const [loginError, setLoginError] = useState<string | null>(null);
   const [loginPending, setLoginPending] = useState(false);
   const [remotePlayers, setRemotePlayers] = useState<PlayerState[]>([]);
   const [profileMap, setProfileMap] = useState<Map<string, PlayerProfile>>(new Map());
   const [headRects, setHeadRects] = useState<Map<string, { rect: { x: number; y: number; width: number; height: number }; facing: FacingDirection }>>(new Map());
-  const [playerFacing, setPlayerFacing] = useState<FacingDirection>(1);
   const [audioState, setAudioState] = useState<AudioControlState>(() => getAudioState());
   const [chatMap, setChatMap] = useState<Map<string, ChatMessage>>(new Map());
+  const [guestNameInput, setGuestNameInput] = useState("");
+  const [consoleFocusReason, setConsoleFocusReason] = useState<"keyboard" | "pointer" | null>(null);
   const consoleOpen = inputMode !== null;
   const profileMapRef = useRef<Map<string, PlayerProfile>>(new Map());
   const chatSeenRef = useRef<Map<string, string>>(new Map());
@@ -67,6 +78,50 @@ export function App() {
       return next;
     });
   }, []);
+
+  const activeDirectionsRef = useRef<Set<DirectionKey>>(new Set());
+
+  const pressDirection = useCallback(
+    (direction: DirectionKey) => {
+      if (activeDirectionsRef.current.has(direction)) {
+        return;
+      }
+      activeDirectionsRef.current.add(direction);
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: DIRECTION_KEY_MAP[direction], bubbles: true }));
+    },
+    [],
+  );
+
+  const releaseDirection = useCallback(
+    (direction: DirectionKey) => {
+      if (!activeDirectionsRef.current.has(direction)) {
+        return;
+      }
+      activeDirectionsRef.current.delete(direction);
+      window.dispatchEvent(new KeyboardEvent("keyup", { key: DIRECTION_KEY_MAP[direction], bubbles: true }));
+    },
+    [],
+  );
+
+  const createDpadPressHandler = useCallback(
+    (direction: DirectionKey) => (event: ReactPointerEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+      pressDirection(direction);
+    },
+    [pressDirection],
+  );
+
+  const createDpadReleaseHandler = useCallback(
+    (direction: DirectionKey) => (event: ReactPointerEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+      releaseDirection(direction);
+    },
+    [releaseDirection],
+  );
 
   const resolvePubkey = useCallback((input: string): string => {
     const trimmed = input.trim();
@@ -94,15 +149,17 @@ export function App() {
   }, []);
 
   const finalizeLogin = useCallback(
-    (hex: string) => {
+    (hex: string, alias?: string) => {
       const normalized = hex.toLowerCase();
       const encoded = npubEncode(normalized);
       pubkeyRef.current = normalized;
       setPubkey(normalized);
       setNpub(encoded);
+      setLocalAlias(alias ?? null);
       setLoginError(null);
       setNpubInputValue("");
-      appendLog(`Logged in as ${encoded}`);
+      setGuestNameInput("");
+      appendLog(alias ? `Joined as ${alias} (${encoded})` : `Logged in as ${encoded}`);
       gameInstanceRef.current?.spawn();
     },
     [appendLog],
@@ -197,11 +254,15 @@ export function App() {
         return;
       }
 
-      let targetWidth = window.innerWidth;
+      const parent = container.parentElement as HTMLElement | null;
+      const availableWidth = parent ? parent.clientWidth : window.innerWidth;
+      const maxHeight = Math.max(240, window.innerHeight * 0.6);
+
+      let targetWidth = availableWidth;
       let targetHeight = targetWidth / desiredAspect;
 
-      if (targetHeight > window.innerHeight) {
-        targetHeight = window.innerHeight;
+      if (targetHeight > maxHeight) {
+        targetHeight = maxHeight;
         targetWidth = targetHeight * desiredAspect;
       }
 
@@ -210,15 +271,14 @@ export function App() {
 
       container.style.width = `${targetWidth}px`;
       container.style.height = `${targetHeight}px`;
-      container.style.maxWidth = "100vw";
-      container.style.maxHeight = "100vh";
+      container.style.maxWidth = "100%";
 
       app.renderer.resize(targetWidth, targetHeight);
     };
 
     app
       .init({
-        background: "#121212",
+        background: "#344149",
         hello: false,
         autoDensity: true,
         antialias: false,
@@ -236,12 +296,15 @@ export function App() {
         }
 
         app.canvas.classList.add("game-canvas");
-        container.appendChild(app.canvas);
+        const firstChild = container.firstChild;
+        if (firstChild) {
+          container.insertBefore(app.canvas, firstChild);
+        } else {
+          container.appendChild(app.canvas);
+        }
         canvasAttached = true;
         const game = await initGame(app, {
           onPlayerPosition: data => {
-            setPlayerPosition({ x: data.x, y: data.y });
-            setPlayerFacing(data.facing);
             const currentNpub = pubkeyRef.current;
             if (currentNpub) {
               updateLocalPlayer({ npub: currentNpub, x: data.x, y: data.y, facing: data.facing });
@@ -296,7 +359,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!consoleOpen) {
+    if (!consoleOpen || consoleFocusReason !== "keyboard") {
       return;
     }
     const input = consoleInputRef.current;
@@ -310,7 +373,7 @@ export function App() {
     });
 
     return () => cancelAnimationFrame(frame);
-  }, [consoleOpen, consoleInput.length]);
+  }, [consoleOpen, consoleInput.length, consoleFocusReason]);
 
   useEffect(() => {
     if (!consoleOpen) {
@@ -328,12 +391,21 @@ export function App() {
       return;
     }
 
-    if (!pubkey || consoleOpen) {
+    if (!pubkey) {
       gameInstanceRef.current.setInputCaptured(true);
-    } else {
-      gameInstanceRef.current.setInputCaptured(false);
+      return;
     }
-  }, [pubkey, consoleOpen]);
+
+    const input = consoleInputRef.current;
+    const shouldCapture = Boolean(consoleOpen && (consoleFocusReason === "keyboard" || document.activeElement === input));
+    gameInstanceRef.current.setInputCaptured(shouldCapture);
+  }, [pubkey, consoleOpen, consoleFocusReason]);
+
+  useEffect(() => {
+    if (!consoleOpen) {
+      setConsoleFocusReason(null);
+    }
+  }, [consoleOpen]);
 
   useEffect(() => {
     const handleShortcut = (event: globalThis.KeyboardEvent) => {
@@ -351,6 +423,7 @@ export function App() {
         setInputMode("command");
         setConsoleInput("/");
         gameInstanceRef.current?.setInputCaptured(true);
+        setConsoleFocusReason("keyboard");
         return;
       }
 
@@ -360,6 +433,7 @@ export function App() {
         setInputMode("chat");
         setConsoleInput("");
         gameInstanceRef.current?.setInputCaptured(true);
+        setConsoleFocusReason("keyboard");
       }
     };
 
@@ -393,6 +467,7 @@ export function App() {
 
       setConsoleInput("/");
       setInputMode(null);
+      setConsoleFocusReason(null);
       gameInstanceRef.current?.setInputCaptured(false);
     },
     [appendLog, consoleInput, inputMode],
@@ -426,6 +501,26 @@ export function App() {
     }
   }, [finalizeLogin]);
 
+  const handleGuestLogin = useCallback(
+    (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      const trimmed = guestNameInput.trim();
+      if (!trimmed) {
+        setLoginError("Pick a display name to join as a guest.");
+        return;
+      }
+      try {
+        const secretKey = generateSecretKey();
+        const pubkeyHex = getPublicKey(secretKey);
+        finalizeLogin(pubkeyHex, trimmed);
+      } catch (error) {
+        console.error("Guest login failed", error);
+        setLoginError("Failed to generate a guest identity");
+      }
+    },
+    [finalizeLogin, guestNameInput],
+  );
+
   const handleLogout = useCallback(() => {
     const previousNpub = pubkeyRef.current;
     if (previousNpub) {
@@ -441,8 +536,11 @@ export function App() {
     setNpub(null);
     setLoginError(null);
     setNpubInputValue("");
+    setGuestNameInput("");
+    setLocalAlias(null);
     setInputMode(null);
     setConsoleInput("/");
+    setConsoleFocusReason(null);
     appendLog("Logged out");
     avatarRef.current = null;
     gameInstanceRef.current?.setAvatar(null);
@@ -456,6 +554,7 @@ export function App() {
       setConsoleInput("/");
       setInputMode(null);
       gameInstanceRef.current?.setInputCaptured(false);
+      setConsoleFocusReason(null);
     }
   }, []);
 
@@ -474,9 +573,22 @@ export function App() {
     setSpeakerEnabled(!audioState.speakerEnabled);
   }, [audioState.speakerEnabled]);
 
+  const handleConsoleTap = useCallback(() => {
+    if (consoleOpen || !pubkey) {
+      return;
+    }
+    setInputMode("chat");
+    setConsoleInput("");
+    gameInstanceRef.current?.setInputCaptured(true);
+    setConsoleFocusReason("pointer");
+  }, [consoleOpen, pubkey]);
+
   const localProfile = pubkey ? profileMap.get(pubkey)?.profile : undefined;
 
   const displayName = useMemo(() => {
+    if (localAlias) {
+      return localAlias;
+    }
     const name = localProfile ? getDisplayName(localProfile) : null;
     if (name) {
       return name;
@@ -485,7 +597,7 @@ export function App() {
       return `${npub.slice(0, 12)}…`;
     }
     return null;
-  }, [localProfile, npub]);
+  }, [localAlias, localProfile, npub]);
 
   const avatarUrl = useMemo(() => {
     if (!pubkey) {
@@ -544,62 +656,136 @@ export function App() {
   }, [headRects, profileMap, npub, displayName, avatarUrl, remotePlayers, chatMap]);
 
   const lines = consoleOpen ? logMessages : logMessages.slice(-1);
-  const statusMessage = inputMode === "chat" ? "Chat ready" : inputMode === "command" ? "Console ready" : "Press T to chat, / for commands";
+  const statusMessage = inputMode === "chat" ? "Chat ready" : inputMode === "command" ? "Console ready" : "Tap here or press T to chat";
   const visibleLogs = lines.length > 0 ? lines : [statusMessage];
+  const consoleRegionClass = `console-region${consoleOpen ? " is-open" : ""}`;
 
   return (
-    <div className="viewport" ref={containerRef}>
-      <div className="hud" aria-hidden={!consoleOpen && visibleLogs.length === 0}>
-        <div className="hud-top">
-          <div className="debug-panel">
-            <div className="debug-title">Debug</div>
-            <div className="debug-row">x: {Math.round(playerPosition.x)}</div>
-            <div className="debug-row">y: {Math.round(playerPosition.y)}</div>
-          </div>
-
+    <div className="app-shell">
+      <div className="app-main">
+        <header className="status-bar">
           {pubkey ? (
-            <div className="login-panel">
-              <div className="login-summary">
+            <div className="status-strip">
+              <div className="status-strip__identity">
                 {avatarUrl ? (
-                  <img className="login-avatar" src={avatarUrl} alt="Avatar" />
+                  <img className="status-strip__avatar" src={avatarUrl} alt="Avatar" />
                 ) : (
-                  <div className="login-avatar placeholder" />
+                  <div className="status-strip__avatar status-strip__avatar--placeholder" />
                 )}
-                <div className="login-details">
-                  <div className="login-label">Logged in</div>
-                  <div className="login-name" title={npub ?? undefined}>
-                    {displayName ?? (npub ? `${npub.slice(0, 12)}…` : "Anon")}
-                  </div>
+                <div className="status-strip__meta">
+                  <span className="status-strip__label">Logged in</span>
+                  <span className="status-strip__name" title={npub ?? undefined}>
+                    {displayName ?? (npub ? `${npub.slice(0, 12)}…` : "Guest")}
+                  </span>
                 </div>
-                <button type="button" className="btn-link" onClick={handleLogout}>
-                  Logout
-                </button>
               </div>
-              <div className="audio-controls">
+              <div className="status-strip__controls">
                 <button
                   type="button"
-                  className={`audio-btn${audioState.micEnabled ? " is-on" : ""}`}
+                  className={`status-strip__btn${audioState.micEnabled ? " is-on" : ""}`}
                   onClick={handleToggleMic}
                   disabled={!audioState.supported}
-                  title={audioState.supported ? undefined : "Microphone not supported"}
                 >
                   {audioState.micEnabled ? "Mic On" : "Mic Off"}
                 </button>
                 <button
                   type="button"
-                  className={`audio-btn${audioState.speakerEnabled ? " is-on" : ""}`}
+                  className={`status-strip__btn${audioState.speakerEnabled ? " is-on" : ""}`}
                   onClick={handleToggleSpeaker}
                 >
                   {audioState.speakerEnabled ? "Speaker On" : "Speaker Off"}
                 </button>
+                <button type="button" className="status-strip__btn status-strip__btn--ghost" onClick={handleLogout}>
+                  Logout
+                </button>
               </div>
-              {audioState.micError ? <div className="audio-error">{audioState.micError}</div> : null}
+              {audioState.micError ? <div className="status-error">{audioState.micError}</div> : null}
             </div>
-          ) : null}
+          ) : (
+            <div className="status-strip status-strip--placeholder">Sign in to explore the InnPub.</div>
+          )}
+        </header>
+
+        <div className="game-container">
+          <div className="game-surface" ref={containerRef}>
+            <div className="game-overlays">
+              <div className="player-overlays">
+                {overlayEntries.map(entry => (
+                  <div
+                    key={entry.npub}
+                    className={`avatar-head${entry.speakingLevel > 0.02 ? " is-speaking" : ""}`}
+                    style={{
+                      width: `${entry.rect.width}px`,
+                      height: `${entry.rect.height}px`,
+                      transform: `translate3d(${entry.rect.x}px, ${entry.rect.y}px, 0)`,
+                    }}
+                  >
+                    <img src={entry.avatar} alt={entry.name} />
+                    {entry.chat ? (
+                      <div className="chat-bubble" key={entry.chat.id}>
+                        <span>{entry.chat.message}</span>
+                      </div>
+                    ) : null}
+                    <div className="avatar-label">{entry.name}</div>
+                  </div>
+                ))}
+              </div>
+              {pubkey ? (
+                <div className="dpad" aria-hidden="true">
+                  <button
+                    type="button"
+                    className="dpad-btn dpad-btn--up"
+                    onPointerDown={createDpadPressHandler("up")}
+                    onPointerUp={createDpadReleaseHandler("up")}
+                    onPointerLeave={createDpadReleaseHandler("up")}
+                    onPointerCancel={createDpadReleaseHandler("up")}
+                  >
+                    ↑
+                  </button>
+                  <div className="dpad-middle">
+                    <button
+                      type="button"
+                      className="dpad-btn dpad-btn--left"
+                      onPointerDown={createDpadPressHandler("left")}
+                      onPointerUp={createDpadReleaseHandler("left")}
+                      onPointerLeave={createDpadReleaseHandler("left")}
+                      onPointerCancel={createDpadReleaseHandler("left")}
+                    >
+                      ←
+                    </button>
+                    <button
+                      type="button"
+                      className="dpad-btn dpad-btn--right"
+                      onPointerDown={createDpadPressHandler("right")}
+                      onPointerUp={createDpadReleaseHandler("right")}
+                      onPointerLeave={createDpadReleaseHandler("right")}
+                      onPointerCancel={createDpadReleaseHandler("right")}
+                    >
+                      →
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    className="dpad-btn dpad-btn--down"
+                    onPointerDown={createDpadPressHandler("down")}
+                    onPointerUp={createDpadReleaseHandler("down")}
+                    onPointerLeave={createDpadReleaseHandler("down")}
+                    onPointerCancel={createDpadReleaseHandler("down")}
+                  >
+                    ↓
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </div>
         </div>
 
-        <div className={`console-panel${consoleOpen ? " is-open" : ""}`}>
-          <div className="console-log" ref={consoleLogRef}>
+        <section
+          className={consoleRegionClass}
+          onClick={consoleOpen ? undefined : handleConsoleTap}
+          role="presentation"
+        >
+          <div className="console-region__log" ref={consoleLogRef}>
             {visibleLogs.map((line, index) => (
               <div key={`${index}-${line}`} className="console-line">
                 {line}
@@ -607,13 +793,15 @@ export function App() {
             ))}
           </div>
           {consoleOpen && (
-            <form className="console-input" onSubmit={handleConsoleSubmit}>
-              <span className="console-prompt">&gt;</span>
+            <form className="console-region__form" onSubmit={handleConsoleSubmit}>
+              <span className="console-region__prompt">&gt;</span>
               <input
                 ref={consoleInputRef}
                 value={consoleInput}
                 onChange={event => setConsoleInput(event.target.value)}
                 onKeyDown={handleConsoleInputKeyDown}
+                onFocus={() => setConsoleFocusReason("keyboard")}
+                onBlur={() => setConsoleFocusReason(null)}
                 spellCheck={false}
                 autoComplete="off"
                 autoCorrect="off"
@@ -622,34 +810,14 @@ export function App() {
               />
             </form>
           )}
-        </div>
+        </section>
       </div>
-
-      {overlayEntries.map(entry => (
-        <div
-          key={entry.npub}
-          className={`avatar-head${entry.speakingLevel > 0.02 ? " is-speaking" : ""}`}
-          style={{
-            width: `${entry.rect.width}px`,
-            height: `${entry.rect.height}px`,
-            transform: `translate3d(${entry.rect.x}px, ${entry.rect.y}px, 0)`,
-          }}
-        >
-          <img src={entry.avatar} alt={entry.name} />
-          {entry.chat ? (
-            <div className="chat-bubble" key={entry.chat.id}>
-              <span>{entry.chat.message}</span>
-            </div>
-          ) : null}
-          <div className="avatar-label">{entry.name}</div>
-        </div>
-      ))}
 
       {!pubkey && (
         <div className="login-overlay">
           <div className="login-modal">
-            <h1>InnPub</h1>
-            <p className="login-description">Sign in with your Nostr public key to enter the tavern.</p>
+            <h1>INNPUB</h1>
+            <p className="login-description">Choose how you want to enter the tavern.</p>
             <form className="login-form" onSubmit={handleManualLogin}>
               <input
                 type="text"
@@ -666,6 +834,22 @@ export function App() {
               <button type="submit" disabled={loginPending}>
                 Continue
               </button>
+            </form>
+            <div className="login-divider" aria-hidden="true">
+              <span>or</span>
+            </div>
+            <form className="guest-form" onSubmit={handleGuestLogin}>
+              <input
+                type="text"
+                value={guestNameInput}
+                onChange={event => {
+                  setGuestNameInput(event.target.value);
+                  setLoginError(null);
+                }}
+                placeholder="Pick a display name"
+                maxLength={32}
+              />
+              <button type="submit">Join as Guest</button>
             </form>
             <button type="button" className="ext-login" onClick={handleExtensionLogin} disabled={loginPending}>
               {loginPending ? "Connecting…" : "Login with NIP-07"}
