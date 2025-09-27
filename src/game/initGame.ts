@@ -340,6 +340,7 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
   };
 
   const { container: player, headSlot: localHeadSlot, body: bodySprite } = createPlayerContainer();
+  setAvatarOffset(localHeadSlot, 1);
 
   const spawnX = Math.round(mapPixelWidth / 2 - playerWidth * 1.5);
   const spawnY = Math.round(mapPixelHeight / 2 - playerHeight);
@@ -360,6 +361,11 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
   const remotePlayers = new Map<string, ManagedPlayer>();
 
   const fallbackAvatarUrl = (npub: string) => `https://robohash.org/${npub}.png`;
+
+  const setAvatarOffset = (slot: AvatarSlot, facing: FacingDirection) => {
+    const offset = facing === 0 ? -8 : facing === 1 ? 8 : 0;
+    slot.container.x = playerWidth / 2 + offset;
+  };
 
   const clearAvatarSlot = (slot: AvatarSlot) => {
     if (slot.instance) {
@@ -469,6 +475,7 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
       remotePlayers.set(state.npub, managed);
       scene.addChild(container);
       applyRemoteAvatar(state.npub, managed);
+      setAvatarOffset(managed.headSlot, state.facing);
     }
     return managed;
   };
@@ -504,6 +511,8 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
     }
 
     setSpeakingGlow(managed.headSlot, state.speakingLevel ?? 0);
+
+    setAvatarOffset(managed.headSlot, state.facing);
 
     managed.lastState = state;
     emitHeadPositionFor(state.npub, managed.headSlot.container, state.facing);
@@ -826,6 +835,7 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
     }
 
     bodySprite.scale.x = lastFacing === 0 ? -1 : lastFacing === 1 ? 1 : lastHorizontalDirection;
+    setAvatarOffset(localHeadSlot, lastFacing);
 
     if (moving && walkTextures.length > 0) {
       if (!isWalking || !bodySprite.playing) {
@@ -927,6 +937,9 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
     }
 
     setSpeakingGlow(localHeadSlot, playerState?.speakingLevel ?? 0);
+    if (playerState) {
+      setAvatarOffset(localHeadSlot, playerState.facing);
+    }
 
     if (!playerState && previousNpub) {
       store.updateHeadBounds(previousNpub, null);
