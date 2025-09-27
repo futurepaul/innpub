@@ -1,3 +1,6 @@
+import * as Hang from "@kixelated/hang";
+import { Room as HangRoom } from "@kixelated/hang/meet";
+import { Signal } from "@kixelated/signals";
 import * as Moq from "@kixelated/moq";
 import { getProfilePicture, type ProfileContent } from "applesauce-core/helpers";
 import { decode as decodeNip19 } from "nostr-tools/nip19";
@@ -11,14 +14,9 @@ import {
   shutdownConnection,
   PLAYERS_PREFIX,
   STATE_TRACK,
-  AUDIO_TRACK,
-  SPEAKING_TRACK,
   ROOMS_TRACK,
   CHAT_TRACK,
 } from "./moqConnection";
-import { AudioCapture, isCaptureSupported } from "./audio/capture";
-import { AudioPlayback, type PlaybackStats } from "./audio/playback";
-import { decodePacket, encodePacket } from "./audio/packets";
 
 export type FacingDirection = 0 | 1 | 2 | 3;
 
@@ -52,8 +50,6 @@ type ChatListener = (messages: Map<string, ChatMessage>) => void;
 interface RemoteSubscription {
   path: Moq.Path.Valid;
   stateTrack: Moq.Track;
-  audioTrack?: Moq.Track;
-  speakingTrack?: Moq.Track;
   roomsTrack?: Moq.Track;
   chatTrack?: Moq.Track;
   sourceKey: string;
@@ -67,6 +63,21 @@ interface LocalSession {
   broadcastPath: Moq.Path.Valid;
   broadcast: Moq.Broadcast;
 }
+
+type RemoteAudioSession = {
+  path: Moq.Path.Valid;
+  room: string;
+  npub?: string;
+  broadcast: Hang.Watch.Broadcast;
+  emitter: Hang.Watch.Audio.Emitter;
+  disposeSpeaking?: () => void;
+};
+
+type RoomAudioSubscription = {
+  room: string;
+  prefix: Moq.Path.Valid;
+  roomWatcher: HangRoom;
+};
 
 const listeners = new Set<PlayerListener>();
 const profileListeners = new Set<ProfileListener>();
@@ -84,8 +95,6 @@ const chatMessages = new Map<string, ChatMessage>();
 
 const remoteSubscriptions = new Map<string, RemoteSubscription>();
 const stateSubscribers = new Set<Moq.Track>();
-const audioSubscribers = new Set<Moq.Track>();
-const speakingSubscribers = new Set<Moq.Track>();
 const roomsSubscribers = new Set<Moq.Track>();
 const chatSubscribers = new Set<Moq.Track>();
 const resubscribeTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -103,19 +112,47 @@ let localState: PlayerState | null = null;
 let pendingLocalIdentity: string | null = null;
 let lastSentState: PlayerState | null = null;
 let lastSentAt = 0;
-let audioCapture: AudioCapture | null = null;
-const audioPlayback = new AudioPlayback();
 let micEnabled = false;
 let speakerEnabled = true;
-let currentSpeakingLevel = 0;
-let lastSpeakingSentAt = 0;
 let beforeUnloadRegistered = false;
-let localAudioIdentity: string | null = null;
 let localRooms: string[] = [];
 let chatCounter = 0;
-let syntheticToneEnabled = false;
-let syntheticToneFrequency = 440;
-let syntheticToneAmplitude = 0.05;
+
+const hangConnectionSignal = new Signal<Moq.Connection.Established | undefined>(undefined);
+const hangBroadcastPath = new Signal<Moq.Path.Valid | undefined>(undefined);
+const hangPublishEnabled = new Signal(false);
+const roomAudioSubscriptions = new Map<string, RoomAudioSubscription>();
+const remoteAudioSessions = new Map<Moq.Path.Valid, RemoteAudioSession>();
+
+const AUDIO_SESSION_SUFFIX = Math.random().toString(36).slice(2, 8);
+const hangPublish =
+  typeof window !== "undefined"
+    ? new Hang.Publish.Broadcast({
+        connection: hangConnectionSignal,
+        enabled: hangPublishEnabled,
+        path: hangBroadcastPath,
+        audio: {
+          enabled: hangPublishEnabled,
+          speaking: { enabled: true },
+        },
+      })
+    : null;
+
+hangPublish?.audio.speaking.active.watch(active => {
+  const identity = localState?.npub ?? pendingLocalIdentity ?? localSession?.npub;
+  if (!identity) {
+    return;
+  }
+  if (active === undefined) {
+    setSpeakingLevel(identity, 0);
+    return;
+  }
+  setSpeakingLevel(identity, active ? 1 : 0);
+});
+
+let hangMicrophoneTrack: MediaStreamTrack | null = null;
+let micRequested = false;
+let currentAudioRoom: string | null = null;
 
 const LOCAL_SOURCE_KEY = "local";
 const HEARTBEAT_INTERVAL_MS = 1000;
@@ -130,55 +167,6 @@ const RESUBSCRIBE_MAX_DELAY_MS = 8000;
 const RESUBSCRIBE_JITTER_RATIO = 0.35;
 const MAX_RESUBSCRIBE_ATTEMPTS = 10;
 const MAX_RESET_LOGS = 5;
-const AUDIO_DEBUG_THROTTLE_MS = 200;
-
-type AudioDebugCapture = {
-  framesSent: number;
-  lastSampleRate: number;
-  lastLevel: number;
-  subscribers: number;
-  lastFrameAt: number;
-  lastFrameCount: number;
-  lastFrameDurationMs: number;
-};
-
-type AudioDebugPlayback = {
-  framesDecoded: number;
-  lastPacketAt: number;
-  lastPath?: string;
-  decodeFailures: number;
-};
-
-type AudioDebugSnapshot = {
-  capture: AudioDebugCapture;
-  playback: AudioDebugPlayback & {
-    remotes: Record<string, PlaybackStats>;
-    volumes: Record<string, number>;
-  };
-  subscribers: {
-    audio: number;
-    speaking: number;
-    rooms: number;
-    chat: number;
-  };
-  micEnabled: boolean;
-  speakerEnabled: boolean;
-  audioEnabled: boolean;
-  tone: {
-    enabled: boolean;
-    frequency: number;
-    amplitude: number;
-  };
-  resets: Record<string, number>;
-  timestamp: number;
-};
-
-declare global {
-  interface Window {
-    __innpubAudioDebug?: () => AudioDebugSnapshot;
-  }
-}
-
 export interface AudioControlState {
   micEnabled: boolean;
   speakerEnabled: boolean;
@@ -186,30 +174,19 @@ export interface AudioControlState {
   supported: boolean;
 }
 
+const audioSupported =
+  typeof window !== "undefined" &&
+  typeof navigator !== "undefined" &&
+  typeof navigator.mediaDevices?.getUserMedia === "function" &&
+  (typeof window.AudioContext !== "undefined" ||
+    typeof (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext !== "undefined");
+
 let audioState: AudioControlState = {
   micEnabled: false,
   speakerEnabled: true,
   micError: null,
-  supported: isCaptureSupported,
+  supported: audioSupported,
 };
-
-const audioDebugCapture: AudioDebugCapture = {
-  framesSent: 0,
-  lastSampleRate: 0,
-  lastLevel: 0,
-  subscribers: 0,
-  lastFrameAt: 0,
-  lastFrameCount: 0,
-  lastFrameDurationMs: 0,
-};
-
-const audioDebugPlayback: AudioDebugPlayback = {
-  framesDecoded: 0,
-  lastPacketAt: 0,
-  decodeFailures: 0,
-};
-
-let lastAudioDebugPublish = 0;
 
 function notifyAudioState() {
   for (const listener of audioStateListeners) {
@@ -225,44 +202,6 @@ function setAudioState(patch: Partial<AudioControlState>) {
   audioState = { ...audioState, ...patch };
   notifyAudioState();
 }
-
-function publishAudioDebug(force = false) {
-  if (typeof window === "undefined") {
-    return;
-  }
-  const nowTs = Date.now();
-  if (!force && nowTs - lastAudioDebugPublish < AUDIO_DEBUG_THROTTLE_MS) {
-    return;
-  }
-  lastAudioDebugPublish = nowTs;
-  const snapshot: AudioDebugSnapshot = {
-    capture: { ...audioDebugCapture },
-    playback: {
-      ...audioDebugPlayback,
-      remotes: audioPlayback.getAllStats(),
-      volumes: audioPlayback.getVolumes(),
-    },
-    subscribers: {
-      audio: audioSubscribers.size,
-      speaking: speakingSubscribers.size,
-      rooms: roomsSubscribers.size,
-      chat: chatSubscribers.size,
-    },
-    micEnabled,
-    speakerEnabled,
-    audioEnabled: audioPlayback.isEnabled(),
-    tone: {
-      enabled: syntheticToneEnabled,
-      frequency: syntheticToneFrequency,
-      amplitude: syntheticToneAmplitude,
-    },
-    resets: getResetSnapshot(),
-    timestamp: nowTs,
-  };
-  window.__innpubAudioDebug = () => snapshot;
-}
-
-publishAudioDebug(true);
 
 function isResetStreamError(error: unknown): boolean {
   if (!error) {
@@ -290,14 +229,6 @@ function logTrackSubscribeFailure(path: Moq.Path.Valid, track: string, error: un
   }
 }
 
-function getResetSnapshot(): Record<string, number> {
-  const snapshot: Record<string, number> = {};
-  resetErrorCounts.forEach((value, key) => {
-    snapshot[key] = value;
-  });
-  return snapshot;
-}
-
 function ensureBeforeUnloadHook() {
   if (beforeUnloadRegistered) {
     return;
@@ -307,71 +238,238 @@ function ensureBeforeUnloadHook() {
   }
   beforeUnloadRegistered = true;
   window.addEventListener("beforeunload", () => {
-    if (audioCapture) {
-      void audioCapture.stop();
-      audioCapture = null;
-      micEnabled = false;
-    }
-    audioPlayback.shutdown();
+    hangPublishEnabled.set(false);
+    hangBroadcastPath.set(undefined);
+    releaseMicrophoneTrack();
+    clearRemoteAudioSessions();
   });
 }
 
-function handleCapturedSamples(channels: Float32Array[], sampleRate: number) {
-  const frameCount = channels.length > 0 ? channels[0]?.length ?? 0 : 0;
-  if (frameCount > 0) {
-    audioDebugCapture.framesSent += frameCount;
-  }
-  audioDebugCapture.lastSampleRate = sampleRate;
-  audioDebugCapture.subscribers = audioSubscribers.size;
-  audioDebugCapture.lastFrameAt = Date.now();
-  audioDebugCapture.lastFrameCount = frameCount;
-  audioDebugCapture.lastFrameDurationMs = sampleRate > 0 ? (frameCount / sampleRate) * 1000 : 0;
-  publishAudioDebug();
+function buildAudioBroadcastPath(room: string, npub: string): Moq.Path.Valid {
+  const normalizedRoom = room.trim();
+  const normalizedNpub = npub.trim();
+  return Moq.Path.from("innpub", "rooms", normalizedRoom, normalizedNpub, AUDIO_SESSION_SUFFIX);
+}
 
-  if (audioSubscribers.size === 0) {
+function parseAudioBroadcastPath(path: Moq.Path.Valid): { room?: string; npub?: string } {
+  const base = Moq.Path.from("innpub", "rooms");
+  const suffix = Moq.Path.stripPrefix(base, path);
+  if (suffix === null) {
+    return {};
+  }
+  const segments = suffix.split("/").filter(Boolean);
+  if (segments.length < 2) {
+    return { room: segments[0] };
+  }
+  return { room: segments[0], npub: segments[1] };
+}
+
+async function ensureMicrophoneTrack(): Promise<void> {
+  if (!hangPublish || !audioSupported) {
+    const message = "Microphone capture is not supported in this environment";
+    setAudioState({ micEnabled: false, micError: message });
+    throw new Error(message);
+  }
+
+  if (hangMicrophoneTrack && hangMicrophoneTrack.readyState === "live") {
     return;
   }
-  const packet = encodePacket(channels, sampleRate);
-  if (!packet) {
+
+  releaseMicrophoneTrack();
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const [track] = stream.getAudioTracks();
+    if (!track) {
+      throw new Error("No audio track available");
+    }
+    for (const extra of stream.getTracks()) {
+      if (extra !== track) {
+        extra.stop();
+      }
+    }
+    hangMicrophoneTrack = track;
+    track.addEventListener("ended", handleLocalTrackEnded);
+    hangPublish.audio.source.set(track as Hang.Publish.Audio.Source);
+    micEnabled = true;
+    setAudioState({ micEnabled: true, micError: null });
+  } catch (error) {
+    micEnabled = false;
+    const message = error instanceof Error ? error.message : "Failed to start microphone";
+    setAudioState({ micEnabled: false, micError: message });
+    throw error instanceof Error ? error : new Error(message);
+  }
+}
+
+function handleLocalTrackEnded() {
+  releaseMicrophoneTrack();
+  micRequested = false;
+  hangPublishEnabled.set(false);
+  hangBroadcastPath.set(undefined);
+  setAudioState({ micEnabled: false });
+}
+
+function releaseMicrophoneTrack() {
+  if (!hangMicrophoneTrack) {
+    return;
+  }
+  hangMicrophoneTrack.removeEventListener("ended", handleLocalTrackEnded);
+  if (hangMicrophoneTrack.readyState === "live") {
+    hangMicrophoneTrack.stop();
+  }
+  hangMicrophoneTrack = null;
+  hangPublish?.audio.source.set(undefined);
+  if (micEnabled) {
+    micEnabled = false;
+    setAudioState({ micEnabled: false });
+  }
+}
+
+async function syncLocalAudioPublishState(): Promise<void> {
+  if (!hangPublish) {
     return;
   }
 
-  for (const track of [...audioSubscribers]) {
-    try {
-      track.writeFrame(packet.buffer);
-    } catch (error) {
-      console.warn("failed to write audio frame", error);
-      audioSubscribers.delete(track);
+  const identity = localState?.npub ?? pendingLocalIdentity ?? localSession?.npub;
+  const room = currentAudioRoom;
+  const shouldPublish = micRequested && !!identity && !!room && audioSupported;
+
+  if (!shouldPublish) {
+    hangPublishEnabled.set(false);
+    hangBroadcastPath.set(undefined);
+    releaseMicrophoneTrack();
+    if (!micRequested) {
+      setAudioState({ micEnabled: false, micError: null });
+    }
+    return;
+  }
+
+  const path = buildAudioBroadcastPath(room, identity);
+  hangBroadcastPath.set(path);
+
+  try {
+    await ensureMicrophoneTrack();
+    hangPublishEnabled.set(true);
+  } catch (error) {
+    hangPublishEnabled.set(false);
+    hangBroadcastPath.set(undefined);
+    throw error;
+  }
+}
+
+function ensureRoomSubscription(room: string) {
+  if (roomAudioSubscriptions.has(room)) {
+    return;
+  }
+  const prefix = Moq.Path.from("innpub", "rooms", room);
+  const roomWatcher = new HangRoom({ connection: hangConnectionSignal, path: prefix });
+  roomWatcher.onRemote((path, broadcast) => {
+    if (broadcast) {
+      handleRemoteAudioAdded(room, path, broadcast);
+    } else {
+      handleRemoteAudioRemoved(path);
+    }
+  });
+  roomAudioSubscriptions.set(room, { room, prefix, roomWatcher });
+}
+
+function disposeRoomSubscription(room: string) {
+  const entry = roomAudioSubscriptions.get(room);
+  if (!entry) {
+    return;
+  }
+  entry.roomWatcher.onRemote(undefined);
+  entry.roomWatcher.close();
+  roomAudioSubscriptions.delete(room);
+
+  for (const [path, session] of [...remoteAudioSessions.entries()]) {
+    if (session.room === room) {
+      handleRemoteAudioRemoved(path);
     }
   }
 }
 
-function handleCapturedLevel(level: number) {
-  const clamped = clamp01(level);
-  currentSpeakingLevel = clamped;
-  audioDebugCapture.lastLevel = clamped;
-  publishAudioDebug();
-  const identity = localAudioIdentity ?? localState?.npub ?? pendingLocalIdentity ?? localSession?.npub;
-  if (identity) {
-    setSpeakingLevel(identity, clamped);
-  }
-  broadcastSpeakingLevel();
-}
-
-function broadcastSpeakingLevel(force = false) {
-  const nowMs = now();
-  if (!force && nowMs - lastSpeakingSentAt < SPEAKING_THROTTLE_MS) {
+function handleRemoteAudioAdded(room: string, path: Moq.Path.Valid, broadcast: Hang.Watch.Broadcast) {
+  const localPath = hangBroadcastPath.peek();
+  if (localPath && localPath === path) {
     return;
   }
-  lastSpeakingSentAt = nowMs;
+  if (remoteAudioSessions.has(path)) {
+    return;
+  }
 
-  for (const track of [...speakingSubscribers]) {
-    try {
-      track.writeJson({ level: currentSpeakingLevel, ts: Date.now() });
-    } catch (error) {
-      console.warn("failed to write speaking level", error);
-      speakingSubscribers.delete(track);
+  const { npub } = parseAudioBroadcastPath(path);
+  const emitter = new Hang.Watch.Audio.Emitter(broadcast.audio, {
+    muted: !speakerEnabled,
+    paused: !speakerEnabled,
+  });
+
+  const session: RemoteAudioSession = {
+    path,
+    room,
+    npub,
+    broadcast,
+    emitter,
+  };
+
+  session.disposeSpeaking = broadcast.audio.speaking.active.watch(active => {
+    if (!npub) {
+      return;
     }
+    if (active === undefined) {
+      clearSpeakingLevel(npub);
+      return;
+    }
+    setSpeakingLevel(npub, active ? 1 : 0);
+  });
+
+  broadcast.enabled.set(true);
+  broadcast.audio.enabled.set(speakerEnabled && localRooms.includes(room));
+
+  remoteAudioSessions.set(path, session);
+}
+
+function handleRemoteAudioRemoved(path: Moq.Path.Valid) {
+  const session = remoteAudioSessions.get(path);
+  if (!session) {
+    return;
+  }
+  remoteAudioSessions.delete(path);
+  session.disposeSpeaking?.();
+  session.emitter.close();
+  if (session.npub) {
+    clearSpeakingLevel(session.npub);
+  }
+}
+
+function clearRemoteAudioSessions() {
+  for (const [path] of [...remoteAudioSessions.entries()]) {
+    handleRemoteAudioRemoved(path);
+  }
+  for (const [room] of [...roomAudioSubscriptions.keys()]) {
+    disposeRoomSubscription(room);
+  }
+}
+
+function updateRoomAudioSubscriptions() {
+  const desired = new Set(localRooms);
+  for (const room of desired) {
+    ensureRoomSubscription(room);
+  }
+  for (const [room] of [...roomAudioSubscriptions.keys()]) {
+    if (!desired.has(room)) {
+      disposeRoomSubscription(room);
+    }
+  }
+  syncRemoteAudioPlayback();
+}
+
+function syncRemoteAudioPlayback() {
+  for (const session of remoteAudioSessions.values()) {
+    const shouldPlay = speakerEnabled && localRooms.includes(session.room);
+    session.broadcast.audio.enabled.set(shouldPlay);
+    session.emitter.paused.set(!speakerEnabled || !shouldPlay);
+    session.emitter.muted.set(!speakerEnabled || !shouldPlay);
   }
 }
 
@@ -426,40 +524,7 @@ function pruneChatMessages() {
 }
 
 function updateAudioMix(): void {
-  const local = localRooms;
-  const localIdentity = localState?.npub;
-  for (const [path, subscription] of remoteSubscriptions) {
-    const npub = subscription.npub;
-    if (npub && localIdentity && npub === localIdentity) {
-      audioPlayback.setVolume(path, 0);
-      continue;
-    }
-    let remoteRooms: readonly string[] | undefined;
-    if (npub) {
-      const stored = roomsByNpub.get(npub);
-      if (stored && stored.length > 0) {
-        remoteRooms = stored;
-      } else {
-        const player = players.get(npub);
-        if (player?.rooms && player.rooms.length > 0) {
-          remoteRooms = player.rooms;
-        }
-      }
-    }
-    const audible = isRemoteAudible(local, remoteRooms);
-    audioPlayback.setVolume(path, audible ? 1 : 0);
-  }
-  publishAudioDebug();
-}
-
-function isRemoteAudible(localRooms: readonly string[], remoteRooms: readonly string[] | undefined): boolean {
-  if (localRooms.length === 0) {
-    return false;
-  }
-  if (!remoteRooms || remoteRooms.length === 0) {
-    return false;
-  }
-  return localRooms.some(room => remoteRooms.includes(room));
+  syncRemoteAudioPlayback();
 }
 
 function now(): number {
@@ -939,15 +1004,11 @@ function maybeBroadcastLocal(force = false) {
 function teardownLocalSession() {
   if (!localSession) {
     stateSubscribers.clear();
-    audioSubscribers.clear();
-    speakingSubscribers.clear();
     roomsSubscribers.clear();
     return;
   }
 
   stateSubscribers.clear();
-  audioSubscribers.clear();
-  speakingSubscribers.clear();
   roomsSubscribers.clear();
   try {
     localSession.broadcast.close();
@@ -1017,27 +1078,6 @@ function runPublishLoop(broadcast: Moq.Broadcast) {
             roomsSubscribers.delete(track);
           });
         sendRooms(track);
-      } else if (request.track.name === AUDIO_TRACK) {
-        const track = request.track;
-        audioSubscribers.add(track);
-        audioDebugCapture.subscribers = audioSubscribers.size;
-        publishAudioDebug(true);
-        track.closed
-          .catch(() => undefined)
-          .finally(() => {
-            audioSubscribers.delete(track);
-            audioDebugCapture.subscribers = audioSubscribers.size;
-            publishAudioDebug(true);
-          });
-      } else if (request.track.name === SPEAKING_TRACK) {
-        const track = request.track;
-        speakingSubscribers.add(track);
-        track.closed
-          .catch(() => undefined)
-          .finally(() => {
-            speakingSubscribers.delete(track);
-          });
-        broadcastSpeakingLevel(true);
       } else if (request.track.name === CHAT_TRACK) {
         const track = request.track;
         chatSubscribers.add(track);
@@ -1056,6 +1096,7 @@ function runPublishLoop(broadcast: Moq.Broadcast) {
 }
 
 function handleConnected(connection: Moq.Connection.Established) {
+  hangConnectionSignal.set(connection);
   announcementAbort?.abort();
   announcementAbort = new AbortController();
   void startAnnouncementLoop(connection, announcementAbort.signal);
@@ -1063,9 +1104,12 @@ function handleConnected(connection: Moq.Connection.Established) {
   if (localState) {
     void ensureLocalSession(localState.npub);
   }
+  updateRoomAudioSubscriptions();
+  void syncLocalAudioPublishState().catch(() => undefined);
 }
 
 function handleDisconnected() {
+  hangConnectionSignal.set(undefined);
   announcementAbort?.abort();
   announcementAbort = null;
 
@@ -1074,18 +1118,11 @@ function handleDisconnected() {
       sub.stateTrack.close();
     } catch {}
     try {
-      sub.audioTrack?.close();
-    } catch {}
-    try {
-      sub.speakingTrack?.close();
-    } catch {}
-    try {
       sub.roomsTrack?.close();
     } catch {}
     try {
       sub.chatTrack?.close();
     } catch {}
-    audioPlayback.close(sub.path);
   }
   remoteSubscriptions.clear();
   for (const [path, timer] of resubscribeTimers) {
@@ -1095,13 +1132,14 @@ function handleDisconnected() {
   resubscribeTimers.clear();
   resubscribeAttempts.clear();
   stateSubscribers.clear();
-  audioSubscribers.clear();
-  speakingSubscribers.clear();
   roomsSubscribers.clear();
   chatSubscribers.clear();
   clearRemoteSources();
   teardownLocalSession();
-  audioPlayback.shutdown();
+  clearRemoteAudioSessions();
+  hangPublishEnabled.set(false);
+  hangBroadcastPath.set(undefined);
+  releaseMicrophoneTrack();
   if (chatMessages.size > 0) {
     chatMessages.clear();
     notifyChats();
@@ -1179,15 +1217,11 @@ function subscribeToRemote(path: Moq.Path.Valid) {
       if (remoteSubscriptions.get(path) === subscription) {
         remoteSubscriptions.delete(path);
         try {
-          subscription.audioTrack?.close();
-        } catch {}
-        try {
-          subscription.speakingTrack?.close();
-        } catch {}
-        try {
           subscription.roomsTrack?.close();
         } catch {}
-        audioPlayback.close(path);
+        try {
+          subscription.chatTrack?.close();
+        } catch {}
         removeSource(subscription.sourceKey);
         if (subscription.npub) {
           setRooms(subscription.npub, []);
@@ -1231,48 +1265,6 @@ function subscribeToRemote(path: Moq.Path.Valid) {
   });
 
   try {
-    const audioTrack = broadcast.subscribe(AUDIO_TRACK, -1);
-    clearResetErrorCounts(`${path}:${AUDIO_TRACK}`);
-    subscription.audioTrack = audioTrack;
-    audioTrack.closed
-      .catch(() => undefined)
-      .finally(() => {
-        if (subscription.audioTrack === audioTrack) {
-          subscription.audioTrack = undefined;
-        }
-        audioPlayback.close(path);
-        publishAudioDebug(true);
-      });
-
-    (async () => {
-      await audioPlayback.resume().catch(() => undefined);
-      for (;;) {
-        const frame = await audioTrack.readFrame();
-        if (!frame) {
-          break;
-        }
-        const packet = decodePacket(frame);
-        if (!packet) {
-          audioDebugPlayback.decodeFailures += 1;
-          publishAudioDebug();
-          continue;
-        }
-        await audioPlayback.enqueue(path, packet);
-        audioDebugPlayback.framesDecoded += packet.frameCount;
-        audioDebugPlayback.lastPacketAt = Date.now();
-        audioDebugPlayback.lastPath = path;
-        publishAudioDebug();
-      }
-    })().catch(error => {
-      logTrackSubscribeFailure(path, AUDIO_TRACK, error);
-      scheduleResubscribe(path);
-    });
-  } catch (error) {
-    logTrackSubscribeFailure(path, AUDIO_TRACK, error);
-    scheduleResubscribe(path);
-  }
-
-  try {
     const roomsTrack = broadcast.subscribe(ROOMS_TRACK, 0);
     clearResetErrorCounts(`${path}:${ROOMS_TRACK}`);
     subscription.roomsTrack = roomsTrack;
@@ -1310,41 +1302,6 @@ function subscribeToRemote(path: Moq.Path.Valid) {
   });
   } catch (error) {
     logTrackSubscribeFailure(path, ROOMS_TRACK, error);
-    scheduleResubscribe(path);
-  }
-
-  try {
-    const speakingTrack = broadcast.subscribe(SPEAKING_TRACK, 0);
-    clearResetErrorCounts(`${path}:${SPEAKING_TRACK}`);
-    subscription.speakingTrack = speakingTrack;
-    speakingTrack.closed
-      .catch(() => undefined)
-      .finally(() => {
-        if (subscription.speakingTrack === speakingTrack) {
-          subscription.speakingTrack = undefined;
-        }
-      });
-
-    (async () => {
-      for (;;) {
-        const payload = await speakingTrack.readJson();
-        if (!payload) {
-          break;
-        }
-        const level = parseSpeakingLevel(payload);
-        if (level === undefined) {
-          continue;
-        }
-        if (subscription.npub) {
-          applyRemoteSpeakingLevel(subscription.npub, level);
-        }
-      }
-  })().catch(error => {
-    logTrackSubscribeFailure(path, SPEAKING_TRACK, error);
-    scheduleResubscribe(path);
-  });
-  } catch (error) {
-    logTrackSubscribeFailure(path, SPEAKING_TRACK, error);
     scheduleResubscribe(path);
   }
 
@@ -1401,19 +1358,12 @@ function unsubscribeFromRemote(path: Moq.Path.Valid) {
   try {
     subscription.stateTrack.close();
   } catch {}
-  try {
-    subscription.audioTrack?.close();
-  } catch {}
-  try {
-    subscription.speakingTrack?.close();
-  } catch {}
-  try {
-    subscription.roomsTrack?.close();
-  } catch {}
-  try {
-    subscription.chatTrack?.close();
-  } catch {}
-  audioPlayback.close(path);
+        try {
+          subscription.roomsTrack?.close();
+        } catch {}
+        try {
+          subscription.chatTrack?.close();
+        } catch {}
   removeSource(subscription.sourceKey);
   if (subscription.npub) {
     setRooms(subscription.npub, []);
@@ -1480,17 +1430,6 @@ function parseRoomsPayload(payload: unknown): string[] | undefined {
   return normalizeRooms(parsed);
 }
 
-function parseSpeakingLevel(payload: unknown): number | undefined {
-  if (!payload || typeof payload !== "object") {
-    return undefined;
-  }
-  const level = (payload as Record<string, unknown>).level;
-  if (typeof level !== "number" || Number.isNaN(level)) {
-    return undefined;
-  }
-  return clamp01(level);
-}
-
 function parseChatPayload(payload: unknown): { npub: string; message: string; ts: number; id: string } | undefined {
   if (!payload || typeof payload !== "object") {
     return undefined;
@@ -1517,10 +1456,6 @@ function parseChatPayload(payload: unknown): { npub: string; message: string; ts
     ts: tsValue,
     id: idValue,
   };
-}
-
-function applyRemoteSpeakingLevel(npub: string, level: number) {
-  setSpeakingLevel(npub, clamp01(level));
 }
 
 function clamp01(value: number): number {
@@ -1552,73 +1487,45 @@ function cleanupProfileIfOrphan(npub: string) {
 }
 
 async function startMicrophoneCapture(): Promise<void> {
-  if (micEnabled) {
+  if (micRequested) {
     return;
   }
-  if (!isCaptureSupported) {
+  if (!audioSupported) {
     const message = "Microphone capture is not supported in this browser";
     setAudioState({ micEnabled: false, micError: message });
     throw new Error(message);
   }
   const identity = localState?.npub ?? pendingLocalIdentity ?? localSession?.npub;
-
   if (!identity) {
     const message = "Login before enabling the microphone";
     setAudioState({ micEnabled: false, micError: message });
     throw new Error(message);
   }
-
   ensureBeforeUnloadHook();
-
-  const capture = new AudioCapture({
-    onSamples: handleCapturedSamples,
-    onLevel: handleCapturedLevel,
-  });
-  await capture.setSyntheticTone({
-    enabled: syntheticToneEnabled,
-    frequency: syntheticToneFrequency,
-    amplitude: syntheticToneAmplitude,
-  });
-
+  micRequested = true;
   try {
-    await capture.start();
-    audioCapture = capture;
-    micEnabled = true;
-    localAudioIdentity = identity;
-    setAudioState({ micEnabled: true, micError: null });
+    await syncLocalAudioPublishState();
   } catch (error) {
-    audioCapture = null;
-    micEnabled = false;
-    const message = error instanceof Error ? error.message : "Failed to start microphone";
-    setAudioState({ micEnabled: false, micError: message });
-    throw error instanceof Error ? error : new Error(message);
+    micRequested = false;
+    throw error;
   }
 }
 
 async function stopMicrophoneCapture(force = false): Promise<void> {
-  if (!micEnabled && !force) {
+  if (!micRequested && !force) {
     return;
   }
 
-  const capture = audioCapture;
-  audioCapture = null;
-  micEnabled = false;
-  const identity = localAudioIdentity ?? localState?.npub ?? pendingLocalIdentity ?? localSession?.npub;
-  localAudioIdentity = null;
+  micRequested = false;
+  hangPublishEnabled.set(false);
+  hangBroadcastPath.set(undefined);
+  releaseMicrophoneTrack();
 
-  try {
-    await capture?.stop();
-  } catch (error) {
-    console.warn("failed to stop microphone", error);
-  }
-
-  currentSpeakingLevel = 0;
-  lastSpeakingSentAt = 0;
+  const identity = localState?.npub ?? pendingLocalIdentity ?? localSession?.npub;
   if (identity) {
     setSpeakingLevel(identity, 0);
   }
   setAudioState({ micEnabled: false, micError: null });
-  broadcastSpeakingLevel(true);
 }
 
 function startPruneTimer() {
@@ -1679,6 +1586,7 @@ export function startStream() {
   started = true;
 
   ensureBeforeUnloadHook();
+  updateRoomAudioSubscriptions();
 
   removeConnectionListener = onConnection(handleConnected);
   removeDisconnectListener = onDisconnect(handleDisconnected);
@@ -1725,6 +1633,7 @@ export function updateLocalRooms(rooms: string[]): void {
     return;
   }
   localRooms = normalized;
+  currentAudioRoom = normalized[0] ?? null;
   if (localState) {
     localState = { ...localState, rooms: normalized };
     stateBySource.set(LOCAL_SOURCE_KEY, localState);
@@ -1732,9 +1641,10 @@ export function updateLocalRooms(rooms: string[]): void {
   const npub = localState?.npub;
   if (npub) {
     setRooms(npub, normalized);
-  } else {
-    updateAudioMix();
   }
+  updateRoomAudioSubscriptions();
+  updateAudioMix();
+  void syncLocalAudioPublishState().catch(() => undefined);
   broadcastRoomsUpdate();
 }
 
@@ -1750,8 +1660,10 @@ export function removePlayer(npub: string) {
     lastSentAt = 0;
     pendingLocalIdentity = null;
     localRooms = [];
+    currentAudioRoom = null;
     removeSource(LOCAL_SOURCE_KEY);
     void stopMicrophoneCapture();
+    updateRoomAudioSubscriptions();
   }
 
   untrackProfile(npub);
@@ -1801,12 +1713,8 @@ export function setSpeakerEnabled(enabled: boolean): void {
   }
   speakerEnabled = enabled;
   ensureBeforeUnloadHook();
-  audioPlayback.setEnabled(enabled);
   setAudioState({ speakerEnabled: enabled });
-  if (enabled) {
-    void audioPlayback.resume().catch(() => undefined);
-  }
-  updateAudioMix();
+  syncRemoteAudioPlayback();
 }
 
 export function getAudioState(): AudioControlState {
@@ -1816,24 +1724,4 @@ export function getAudioState(): AudioControlState {
 export function getProfilePictureUrl(npub: string): string | undefined {
   const profile = profiles.get(npub)?.profile;
   return profile ? getProfilePicture(profile) ?? undefined : undefined;
-}
-
-export async function setSyntheticTone(config: { enabled?: boolean; frequency?: number; amplitude?: number }): Promise<void> {
-  if (typeof config.enabled === "boolean") {
-    syntheticToneEnabled = config.enabled;
-  }
-  if (typeof config.frequency === "number" && Number.isFinite(config.frequency)) {
-    syntheticToneFrequency = Math.max(20, Math.min(5000, config.frequency));
-  }
-  if (typeof config.amplitude === "number" && Number.isFinite(config.amplitude)) {
-    syntheticToneAmplitude = Math.max(0, Math.min(1, config.amplitude));
-  }
-
-  if (audioCapture) {
-    await audioCapture.setSyntheticTone({
-      enabled: syntheticToneEnabled,
-      frequency: syntheticToneFrequency,
-      amplitude: syntheticToneAmplitude,
-    });
-  }
 }
