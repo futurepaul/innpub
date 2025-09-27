@@ -1,5 +1,5 @@
-import * as Hang from "@kixelated/hang";
-import { Room as HangRoom } from "@kixelated/hang/meet";
+import * as Hang from "moq-and-other-stuff";
+import { Room as HangRoom } from "moq-and-other-stuff/meet";
 import { Signal } from "@kixelated/signals";
 import * as Moq from "@kixelated/moq";
 import { getProfilePicture, type ProfileContent } from "applesauce-core/helpers";

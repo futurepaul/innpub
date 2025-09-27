@@ -1,0 +1,33 @@
+{
+  "name": "moq-and-other-stuff",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Minimal MoQ audio publish/watch helpers inspired by @kixelated/hang.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./publish": "./src/publish/index.ts",
+    "./publish/audio": "./src/publish/audio/index.ts",
+    "./publish/audio/capture-worklet": "./src/publish/audio/capture-worklet.ts",
+    "./publish/audio/speaking-worker": "./src/publish/audio/speaking-worker.ts",
+    "./watch": "./src/watch/index.ts",
+    "./watch/audio": "./src/watch/audio/index.ts",
+    "./watch/audio/render-worklet": "./src/watch/audio/render-worklet.ts",
+    "./watch/audio/ring-buffer": "./src/watch/audio/ring-buffer.ts",
+    "./meet": "./src/meet/index.ts",
+    "./frame": "./src/frame.ts",
+    "./time": "./src/time.ts"
+  },
+  "sideEffects": [
+    "./src/publish/audio/capture-worklet.ts",
+    "./src/watch/audio/render-worklet.ts"
+  ],
+  "files": [
+    "src"
+  ],
+  "license": "(MIT OR Apache-2.0)",
+  "dependencies": {
+    "@kixelated/moq": "^0.9.1",
+    "@kixelated/signals": "^0.7.0",
+    "zod": "^4.1.11"
+  }
+}

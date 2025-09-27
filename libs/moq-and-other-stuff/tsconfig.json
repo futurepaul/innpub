@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "module": "Preserve",
+    "jsx": "preserve",
+    "types": []
+  },
+  "include": ["src/**/*"],
+  "exclude": []
+}
