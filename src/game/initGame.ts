@@ -280,6 +280,11 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
   const playerWidth = map.tileWidth;
   const playerHeight = map.tileHeight * 2;
 
+  const setAvatarOffset = (slot: AvatarSlot, facing: FacingDirection) => {
+    const offset = facing === 0 ? -8 : facing === 1 ? 8 : 0;
+    slot.container.x = playerWidth / 2 + offset;
+  };
+
   const createPlayerContainer = () => {
     const container = new Container();
     container.eventMode = "none";
@@ -361,11 +366,6 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
   const remotePlayers = new Map<string, ManagedPlayer>();
 
   const fallbackAvatarUrl = (npub: string) => `https://robohash.org/${npub}.png`;
-
-  const setAvatarOffset = (slot: AvatarSlot, facing: FacingDirection) => {
-    const offset = facing === 0 ? -8 : facing === 1 ? 8 : 0;
-    slot.container.x = playerWidth / 2 + offset;
-  };
 
   const clearAvatarSlot = (slot: AvatarSlot) => {
     if (slot.instance) {
