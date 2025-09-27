@@ -254,6 +254,19 @@ function handleLoginCommand(npub: string, alias: string | null): void {
     gameStore.patchLocalPlayer({ alias: localAliasValue });
   } else if (localState && localState.npub === normalized) {
     syncPlayersToStore();
+  } else {
+    const placeholderPosition = localState?.position ?? { x: 0, y: 0 };
+    const placeholderRooms = localState?.rooms ?? [];
+    gameStore.setLocalPlayer({
+      npub: normalized,
+      position: { ...placeholderPosition },
+      facing: localState?.facing ?? 1,
+      rooms: [...placeholderRooms],
+      speakingLevel: 0,
+      updatedAt: Date.now(),
+      alias: localAliasValue,
+      avatarUrl: localAvatarUrlValue,
+    });
   }
 }
 
