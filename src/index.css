@@ -115,36 +115,6 @@ body {
   color: rgba(210, 230, 255, 0.95);
 }
 
-.audio-controls .tone-btn {
-  min-width: 104px;
-}
-
-.tone-controls {
-  display: flex;
-  gap: 10px;
-  margin-top: 10px;
-  pointer-events: auto;
-}
-
-.tone-controls label {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  font-size: 0.75rem;
-  color: rgba(212, 224, 255, 0.7);
-}
-
-.tone-controls input[type="number"] {
-  width: 88px;
-  padding: 4px 6px;
-  border-radius: 6px;
-  border: 1px solid rgba(124, 170, 255, 0.4);
-  background: rgba(10, 18, 34, 0.85);
-  color: #d8e3ff;
-  font-family: inherit;
-  font-size: 0.85rem;
-}
-
 .console-panel {
   background: linear-gradient(180deg, rgba(6, 12, 24, 0.6), rgba(6, 12, 24, 0.85));
   border: 1px solid rgba(92, 132, 255, 0.35);

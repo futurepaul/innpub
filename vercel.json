@@ -7,9 +7,5 @@
         { "key": "Cross-Origin-Embedder-Policy", "value": "credentialless" }
       ]
     }
-  ],
-  "rewrites": [
-    { "source": "/audio-lab", "destination": "/index.html" },
-    { "source": "/audio-lab/(.*)", "destination": "/index.html" }
   ]
 }

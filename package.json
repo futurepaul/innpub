@@ -4,14 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "predev": "bun scripts/prepare-worklets.ts",
     "dev": "bunx vite",
-    "prebuild": "bun scripts/prepare-worklets.ts",
     "build": "bunx vite build",
     "preview": "bunx vite preview"
   },
   "dependencies": {
-    "@ain1084/audio-worklet-stream": "^2.0.1",
+    "@kixelated/hang": "^0.5.0",
+    "@kixelated/signals": "^0.7.0",
     "@kixelated/moq": "^0.9.1",
     "applesauce-core": "^3.1.0",
     "applesauce-loaders": "^3.1.0",

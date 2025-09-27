@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
-import { Link } from "wouter";
-
 import "./index.css";
 import { initGame, type GameInstance } from "./game/initGame";
 import { Application } from "pixi.js";
@@ -26,7 +24,6 @@ import {
   setSpeakerEnabled,
   getAudioState,
   type AudioControlState,
-  setSyntheticTone as setSyntheticToneSource,
   subscribeChats,
   sendChatMessage,
   type ChatMessage,
@@ -57,10 +54,6 @@ export function App() {
   const [playerFacing, setPlayerFacing] = useState<FacingDirection>(1);
   const [audioState, setAudioState] = useState<AudioControlState>(() => getAudioState());
   const [chatMap, setChatMap] = useState<Map<string, ChatMessage>>(new Map());
-  const [toneEnabled, setToneEnabled] = useState(false);
-  const [toneFrequency, setToneFrequency] = useState(440);
-  const [toneAmplitude, setToneAmplitude] = useState(0.05);
-
   const consoleOpen = inputMode !== null;
   const profileMapRef = useRef<Map<string, PlayerProfile>>(new Map());
   const chatSeenRef = useRef<Map<string, string>>(new Map());
@@ -455,8 +448,6 @@ export function App() {
     gameInstanceRef.current?.setAvatar(null);
     setPlayerRooms([]);
     void setMicrophoneEnabled(false);
-    setToneEnabled(false);
-    void setSyntheticToneSource({ enabled: false });
   }, [appendLog]);
 
   const handleConsoleInputKeyDown = useCallback((event: ReactKeyboardEvent<HTMLInputElement>) => {
@@ -512,14 +503,6 @@ export function App() {
   }, [avatarUrl]);
 
   useEffect(() => {
-    void setSyntheticToneSource({
-      enabled: toneEnabled,
-      frequency: toneFrequency,
-      amplitude: toneAmplitude,
-    });
-  }, [toneEnabled, toneFrequency, toneAmplitude]);
-
-  useEffect(() => {
     const game = gameInstanceRef.current;
     if (!game) {
       return;
@@ -572,9 +555,6 @@ export function App() {
             <div className="debug-title">Debug</div>
             <div className="debug-row">x: {Math.round(playerPosition.x)}</div>
             <div className="debug-row">y: {Math.round(playerPosition.y)}</div>
-            <Link href="/audio-lab" className="debug-link">
-              Open Audio Lab ↗
-            </Link>
           </div>
 
           {pubkey ? (
@@ -612,69 +592,6 @@ export function App() {
                 >
                   {audioState.speakerEnabled ? "Speaker On" : "Speaker Off"}
                 </button>
-                <button
-                  type="button"
-                  className={`audio-btn tone-btn${toneEnabled ? " is-on" : ""}`}
-                  onClick={() => {
-                    setToneEnabled(prev => {
-                      const next = !prev;
-                      void setSyntheticToneSource({
-                        enabled: next,
-                        frequency: toneFrequency,
-                        amplitude: toneAmplitude,
-                      });
-                      appendLog(next ? "Synthetic tone enabled" : "Synthetic tone disabled");
-                      return next;
-                    });
-                  }}
-                >
-                  {toneEnabled ? "Tone On" : "Test Tone"}
-                </button>
-              </div>
-              <div className="tone-controls">
-                <label>
-                  <span>Freq</span>
-                  <input
-                    type="number"
-                    min={50}
-                    max={4000}
-                    value={toneFrequency}
-                    onChange={event => {
-                      const value = Number(event.target.value);
-                      if (Number.isFinite(value)) {
-                        const clamped = Math.min(4000, Math.max(50, value));
-                        setToneFrequency(clamped);
-                        void setSyntheticToneSource({
-                          enabled: toneEnabled,
-                          frequency: clamped,
-                          amplitude: toneAmplitude,
-                        });
-                      }
-                    }}
-                  />
-                </label>
-                <label>
-                  <span>Gain</span>
-                  <input
-                    type="number"
-                    min={0}
-                    max={1}
-                    step={0.01}
-                    value={toneAmplitude}
-                    onChange={event => {
-                      const value = Number(event.target.value);
-                      if (Number.isFinite(value)) {
-                        const clamped = Math.min(1, Math.max(0, value));
-                        setToneAmplitude(clamped);
-                        void setSyntheticToneSource({
-                          enabled: toneEnabled,
-                          frequency: toneFrequency,
-                          amplitude: clamped,
-                        });
-                      }
-                    }}
-                  />
-                </label>
               </div>
               {audioState.micError ? <div className="audio-error">{audioState.micError}</div> : null}
             </div>

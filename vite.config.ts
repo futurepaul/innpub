@@ -25,9 +25,9 @@ export default defineConfig({
     headers: CROSS_ORIGIN_HEADERS,
   },
   optimizeDeps: {
-    exclude: ["@ain1084/audio-worklet-stream"],
+    exclude: ["@kixelated/hang"],
   },
   ssr: {
-    noExternal: ["@ain1084/audio-worklet-stream"],
+    noExternal: ["@kixelated/hang"],
   },
 });
