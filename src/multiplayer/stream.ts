@@ -162,6 +162,11 @@ function toStoreLocalPlayer(state: PlayerState): StoreLocalPlayerState {
 function syncPlayersToStore(): void {
   const snapshot = Array.from(players.values());
   const local = localState ? toStoreLocalPlayer(localState) : null;
+  if (local) {
+    console.debug("syncPlayersToStore local", local);
+  } else {
+    console.debug("syncPlayersToStore local null");
+  }
   const remotes: StoreRemotePlayerState[] = [];
   for (const entry of snapshot) {
     if (localState && entry.npub === localState.npub) {
@@ -1239,6 +1244,9 @@ function trackProfile(npub: string) {
             next: picture ?? null,
           });
           gameStore.patchLocalPlayer({ avatarUrl: picture ?? null });
+          if (localState) {
+            syncPlayersToStore();
+          }
         }
       }
     });
