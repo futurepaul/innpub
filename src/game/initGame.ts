@@ -2,6 +2,7 @@ import {
   type Application,
   Assets,
   Container,
+  Graphics,
   Polygon,
   Rectangle,
   Sprite,
@@ -12,13 +13,20 @@ import {
 } from "pixi.js";
 import type { Subscription } from "rxjs";
 import { XMLParser } from "fast-xml-parser";
+import { getProfilePicture } from "applesauce-core/helpers";
 
 import type {
   FacingDirection,
   GameStore,
   LocalPlayerState,
+  PlayerProfileEntry,
   RemotePlayerState,
 } from "./state";
+import {
+  createAvatarDisplay,
+  destroyAvatarDisplay,
+  type AvatarDisplayInstance,
+} from "./avatarAssets";
 
 export type GameInstance = {
   destroy: () => void;
@@ -49,6 +57,15 @@ type LegacyPlayerState = {
   facing: FacingDirection;
   rooms?: string[];
   speakingLevel?: number;
+};
+
+type AvatarSlot = {
+  container: Container;
+  placeholder: Sprite;
+  instance: AvatarDisplayInstance | null;
+  currentUrl: string | null;
+  requestId: number;
+  glow: Graphics;
 };
 
 type TilesetInfo = {
@@ -127,7 +144,9 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
 
   const subscriptions: Subscription[] = [];
   let currentLocalNpub: string | null = store.getSnapshot().localPlayer?.npub ?? null;
-  let currentAvatarUrl: string | null | undefined = store.getSnapshot().localPlayer?.avatarUrl ?? null;
+  let localAvatarOverride: string | null | undefined = store.getSnapshot().localPlayer?.avatarUrl ?? null;
+  let localResolvedAvatar: string | null = null;
+  let profileSnapshot: ReadonlyMap<string, PlayerProfileEntry> = store.getSnapshot().profiles;
 
   const toLegacyState = (player: RemotePlayerState | LocalPlayerState): LegacyPlayerState => ({
     npub: player.npub,
@@ -266,14 +285,37 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
     container.eventMode = "none";
     container.label = "player";
 
-    const head = new Sprite(WHITE_TEXTURE);
-    head.width = playerWidth;
-    head.height = map.tileHeight;
-    head.roundPixels = true;
-    head.tint = 0xffffff;
-    head.anchor.set(0.5, 0);
-    head.x = playerWidth / 2;
-    head.alpha = 0;
+    const headContainer = new Container();
+    headContainer.eventMode = "none";
+    headContainer.label = "avatar";
+    headContainer.x = playerWidth / 2;
+
+    const glow = new Graphics();
+    glow.eventMode = "none";
+    glow.circle(0, map.tileHeight / 2, map.tileHeight / 2 + 6);
+    glow.fill({ color: 0xfde68a, alpha: 0.65 });
+    glow.alpha = 0;
+    glow.visible = true;
+
+    const placeholder = new Sprite(WHITE_TEXTURE);
+    placeholder.width = playerWidth;
+    placeholder.height = map.tileHeight;
+    placeholder.roundPixels = true;
+    placeholder.tint = 0xe5e7eb;
+    placeholder.anchor.set(0.5, 0);
+    placeholder.x = 0;
+    placeholder.y = 0;
+    placeholder.eventMode = "none";
+    headContainer.addChild(glow, placeholder);
+
+    const headSlot: AvatarSlot = {
+      container: headContainer,
+      placeholder,
+      instance: null,
+      currentUrl: null,
+      requestId: 0,
+      glow,
+    };
 
     const body = new AnimatedSprite(walkTextures.length > 0 ? walkTextures : [WHITE_TEXTURE]);
     body.width = playerWidth;
@@ -292,12 +334,12 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
       body.tint = 0x6ee7b7;
     }
 
-    container.addChild(head, body);
+    container.addChild(headContainer, body);
 
-    return { container, head, body };
+    return { container, headSlot, body };
   };
 
-  const { container: player, head: headSprite, body: bodySprite } = createPlayerContainer();
+  const { container: player, headSlot: localHeadSlot, body: bodySprite } = createPlayerContainer();
 
   const spawnX = Math.round(mapPixelWidth / 2 - playerWidth * 1.5);
   const spawnY = Math.round(mapPixelHeight / 2 - playerHeight);
@@ -307,30 +349,126 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
 
   type ManagedPlayer = {
     container: Container;
-    head: Sprite;
+    headSlot: AvatarSlot;
     body: AnimatedSprite;
     lastState?: LegacyPlayerState;
     lastFacing: FacingDirection;
     lastHorizontal: number;
+    avatarUrl: string | null;
   };
 
   const remotePlayers = new Map<string, ManagedPlayer>();
 
+  const fallbackAvatarUrl = (npub: string) => `https://robohash.org/${npub}.png`;
+
+  const clearAvatarSlot = (slot: AvatarSlot) => {
+    if (slot.instance) {
+      slot.container.removeChild(slot.instance.display);
+      destroyAvatarDisplay(slot.instance);
+      slot.instance = null;
+    }
+    slot.currentUrl = null;
+    slot.placeholder.visible = true;
+    slot.glow.alpha = 0;
+  };
+
+  const setAvatarOnSlot = (slot: AvatarSlot, url: string | null) => {
+    const normalized = url?.trim() || null;
+    if (slot.currentUrl === normalized) {
+      return;
+    }
+
+    slot.requestId += 1;
+    const requestId = slot.requestId;
+
+    if (!normalized) {
+      clearAvatarSlot(slot);
+      return;
+    }
+
+    const load = async () => {
+      try {
+        const avatar = await createAvatarDisplay(normalized);
+        if (requestId !== slot.requestId) {
+          destroyAvatarDisplay(avatar);
+          return;
+        }
+
+        if (slot.instance) {
+          slot.container.removeChild(slot.instance.display);
+          destroyAvatarDisplay(slot.instance);
+        }
+
+        avatar.display.width = slot.placeholder.width;
+        avatar.display.height = slot.placeholder.height;
+        avatar.display.position.set(0, 0);
+        slot.container.addChild(avatar.display);
+        slot.instance = avatar;
+        slot.currentUrl = normalized;
+        slot.placeholder.visible = false;
+      } catch (error) {
+        if (requestId === slot.requestId) {
+          console.warn("Failed to load avatar sprite", normalized, error);
+          clearAvatarSlot(slot);
+        }
+      }
+    };
+
+    void load();
+  };
+
+  const resolveProfileAvatarUrl = (npub: string): string => {
+    const profile = profileSnapshot.get(npub)?.profile;
+    const picture = profile ? getProfilePicture(profile) : undefined;
+    return picture?.trim() || fallbackAvatarUrl(npub);
+  };
+
+  const resolveLocalAvatarUrl = (): string | null => {
+    if (!currentLocalNpub) {
+      return null;
+    }
+
+    const override = localAvatarOverride?.trim();
+    if (override) {
+      return override;
+    }
+
+    const profile = profileSnapshot.get(currentLocalNpub)?.profile;
+    const picture = profile ? getProfilePicture(profile) : undefined;
+    return (picture?.trim() || fallbackAvatarUrl(currentLocalNpub));
+  };
+
+  const applyRemoteAvatar = (npub: string, managed: ManagedPlayer) => {
+    const resolved = resolveProfileAvatarUrl(npub);
+    if (managed.avatarUrl === resolved) {
+      return;
+    }
+    managed.avatarUrl = resolved;
+    setAvatarOnSlot(managed.headSlot, resolved);
+  };
+
+  const setSpeakingGlow = (slot: AvatarSlot, level: number) => {
+    const intensity = level > 0.05 ? Math.min(1, level * 2) : 0;
+    slot.glow.alpha = intensity;
+  };
+
   const getOrCreateRemote = (state: LegacyPlayerState): ManagedPlayer => {
     let managed = remotePlayers.get(state.npub);
     if (!managed) {
-      const { container, head, body } = createPlayerContainer();
+      const { container, headSlot, body } = createPlayerContainer();
       container.x = state.x;
       container.y = state.y;
       managed = {
         container,
-        head,
+        headSlot,
         body,
         lastFacing: state.facing,
         lastHorizontal: state.facing === 0 ? -1 : 1,
+        avatarUrl: null,
       };
       remotePlayers.set(state.npub, managed);
       scene.addChild(container);
+      applyRemoteAvatar(state.npub, managed);
     }
     return managed;
   };
@@ -365,8 +503,10 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
       managed.body.stop();
     }
 
+    setSpeakingGlow(managed.headSlot, state.speakingLevel ?? 0);
+
     managed.lastState = state;
-    emitHeadPositionFor(state.npub, managed.head, state.facing);
+    emitHeadPositionFor(state.npub, managed.headSlot.container, state.facing);
   };
 
   for (const layer of foregroundLayers) {
@@ -601,7 +741,7 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
 
   const emitHeadPositionFor = (
     id: string,
-    target: Sprite,
+    target: Container,
     facingDir: FacingDirection,
   ) => {
     if (!app.renderer) {
@@ -631,7 +771,7 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
   };
 
   const emitHeadPosition = () => {
-    emitHeadPositionFor("local", headSprite, lastFacing);
+    emitHeadPositionFor("local", localHeadSlot.container, lastFacing);
   };
 
   const syncPlayers = (states: LegacyPlayerState[]) => {
@@ -640,12 +780,14 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
     for (const state of states) {
       const managed = getOrCreateRemote(state);
       updateRemotePlayer(managed, state);
+      applyRemoteAvatar(state.npub, managed);
       seen.add(state.npub);
     }
 
     for (const [npub, managed] of remotePlayers) {
       if (!seen.has(npub)) {
         store.updateHeadBounds(npub, null);
+        clearAvatarSlot(managed.headSlot);
         managed.container.destroy({ children: true });
         remotePlayers.delete(npub);
       }
@@ -709,47 +851,11 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
   emitHeadPosition();
   app.ticker.add(tickerFn);
 
-  let avatarAssetUrl: string | undefined;
-  let avatarRequestId = 0;
-
-  const applyHeadTexture = (texture: Texture) => {
-    headSprite.texture = texture;
-    headSprite.width = playerWidth;
-    headSprite.height = map.tileHeight;
-  };
-
-  const setAvatar = (url?: string | null) => {
-    avatarRequestId += 1;
-    const requestId = avatarRequestId;
-
-    const load = async () => {
-      if (!url) {
-        applyHeadTexture(WHITE_TEXTURE);
-        return;
-      }
-
-      try {
-        if (avatarAssetUrl && avatarAssetUrl !== url) {
-          void Assets.unload(avatarAssetUrl).catch(() => {
-            /* ignore unload failures */
-          });
-        }
-
-        avatarAssetUrl = url;
-        const texture = await Assets.load<Texture>(url);
-        if (requestId !== avatarRequestId) {
-          return;
-        }
-        applyHeadTexture(texture);
-      } catch (error) {
-        console.warn("Failed to load avatar texture", error);
-        if (requestId === avatarRequestId) {
-          applyHeadTexture(WHITE_TEXTURE);
-        }
-      }
-    };
-
-    void load();
+  const updateLocalAvatar = (override?: string | null) => {
+    localAvatarOverride = override ?? null;
+    const resolved = resolveLocalAvatarUrl();
+    localResolvedAvatar = resolved;
+    setAvatarOnSlot(localHeadSlot, resolved);
   };
 
   const destroy = () => {
@@ -772,16 +878,15 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
         texture.destroy();
       }
     }
-    if (avatarAssetUrl) {
-      void Assets.unload(avatarAssetUrl);
-      avatarAssetUrl = undefined;
-    }
     pressed.clear();
     for (const [npub, managed] of remotePlayers) {
       store.updateHeadBounds(npub, null);
+      clearAvatarSlot(managed.headSlot);
       managed.container.destroy({ children: true });
     }
     remotePlayers.clear();
+
+    clearAvatarSlot(localHeadSlot);
 
     if (currentLocalNpub) {
       store.updateHeadBounds(currentLocalNpub, null);
@@ -814,16 +919,35 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
   const localPlayerSubscription = store.localPlayer$.subscribe(playerState => {
     const previousNpub = currentLocalNpub;
     currentLocalNpub = playerState?.npub ?? null;
-    const avatar = playerState?.avatarUrl ?? null;
-    if (avatar !== currentAvatarUrl) {
-      currentAvatarUrl = avatar;
-      setAvatar(avatar);
+    const avatarOverride = playerState?.avatarUrl ?? null;
+    const identityChanged = currentLocalNpub !== previousNpub;
+
+    if (identityChanged || avatarOverride !== localAvatarOverride) {
+      updateLocalAvatar(avatarOverride);
     }
+
+    setSpeakingGlow(localHeadSlot, playerState?.speakingLevel ?? 0);
+
     if (!playerState && previousNpub) {
       store.updateHeadBounds(previousNpub, null);
     }
   });
   subscriptions.push(localPlayerSubscription);
+
+  const profileSubscription = store.profiles$.subscribe(profiles => {
+    profileSnapshot = profiles;
+
+    const resolved = resolveLocalAvatarUrl();
+    if (resolved !== localResolvedAvatar) {
+      localResolvedAvatar = resolved;
+      setAvatarOnSlot(localHeadSlot, resolved);
+    }
+
+    for (const [npub, managed] of remotePlayers) {
+      applyRemoteAvatar(npub, managed);
+    }
+  });
+  subscriptions.push(profileSubscription);
 
   const settingsSubscription = store.settings$.subscribe(settings => {
     if (inputCaptured === settings.inputCaptured) {
@@ -860,11 +984,10 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
   // Initial sync with store state
   const snapshot = store.getSnapshot();
   syncPlayers(Array.from(snapshot.remotePlayers.values(), toLegacyState));
-  if (snapshot.localPlayer?.avatarUrl) {
-    currentAvatarUrl = snapshot.localPlayer.avatarUrl;
-    setAvatar(snapshot.localPlayer.avatarUrl);
+  if (snapshot.localPlayer) {
+    updateLocalAvatar(snapshot.localPlayer.avatarUrl ?? null);
   } else {
-    setAvatar(null);
+    updateLocalAvatar(null);
   }
 
   return {

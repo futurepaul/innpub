@@ -1,11 +1,8 @@
 import { getDisplayName, getProfilePicture } from "applesauce-core/helpers";
-import { createMemo, from, Show, type Component } from "solid-js";
+import { createMemo, Show, type Component } from "solid-js";
 
-import { setMicEnabled, setSpeakerEnabled } from "../game/service";
+import { getProfilePictureUrl, setMicEnabled, setSpeakerEnabled } from "../game/service";
 import type { AudioState, PlayerProfileEntry } from "../game/state";
-import { eventStore } from "../nostr/client";
-import { manager } from "../nostr/accounts";
-import { of } from "rxjs";
 
 export interface HeaderProps {
   pubkey: string | null;
@@ -33,18 +30,48 @@ export const Header: Component<HeaderProps> = (props) => {
     setSpeakerEnabled(!props.audioState.speakerEnabled);
   };
 
-  const profile$ = createMemo(() => props.pubkey ? eventStore.profile(props.pubkey) : of(undefined));
-  const profile = from(profile$());
+  const localProfile = createMemo(() => {
+    const pk = props.pubkey;
+    return pk ? props.profileMap.get(pk)?.profile : undefined;
+  });
 
-  const avatarUrl = createMemo(() => getProfilePicture(profile(), `https://robohash.org/${props.pubkey}.png`));
+  const displayName = createMemo(() => {
+    if (props.localAlias) {
+      return props.localAlias;
+    }
+
+    const profile = localProfile();
+    const name = profile ? getDisplayName(profile) : null;
+    if (name) {
+      return name;
+    }
+    const currentNpub = props.npub;
+    if (currentNpub) {
+      return `${currentNpub.slice(0, 12)}…`;
+    }
+    return null;
+  });
+
+  const avatarUrl = createMemo(() => {
+    const pk = props.pubkey;
+    if (!pk) {
+      return null;
+    }
+
+    const profile = localProfile();
+    const profilePicture = profile ? getProfilePicture(profile) : undefined;
+    if (profilePicture) {
+      return profilePicture;
+    }
+
+    return getProfilePictureUrl(pk) ?? null;
+  });
 
   return (
     <header class="status-bar">
       <Show
         when={props.pubkey}
-        fallback={
-          <div class="status-strip status-strip--placeholder">Sign in to explore the InnPub.</div>
-        }
+        fallback={<div class="status-strip status-strip--placeholder">Sign in to explore the InnPub.</div>}
       >
         <div class="status-strip">
           <div class="status-strip__identity">
@@ -52,12 +79,12 @@ export const Header: Component<HeaderProps> = (props) => {
               when={avatarUrl()}
               fallback={<div class="status-strip__avatar status-strip__avatar--placeholder" />}
             >
-              <img class="status-strip__avatar" src={avatarUrl()} alt="Avatar" />
+              <img class="status-strip__avatar" src={avatarUrl()!} alt="Avatar" />
             </Show>
             <div class="status-strip__meta">
               <span class="status-strip__label">Logged in</span>
               <span class="status-strip__name" title={props.npub ?? undefined}>
-                {getDisplayName(profile(), props.npub ? `${props.npub.slice(0, 12)}…` : "Guest")}
+                {displayName() ?? (props.npub ? `${props.npub.slice(0, 12)}…` : "Guest")}
               </span>
             </div>
           </div>
@@ -92,4 +119,3 @@ export const Header: Component<HeaderProps> = (props) => {
     </header>
   );
 };
-
