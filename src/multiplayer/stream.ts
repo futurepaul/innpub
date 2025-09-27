@@ -79,6 +79,11 @@ type RoomAudioSubscription = {
   roomWatcher: HangRoom;
 };
 
+interface FrameProducerState {
+  producer: Hang.Frame.Producer;
+  keyframeSent: boolean;
+}
+
 const listeners = new Set<PlayerListener>();
 const profileListeners = new Set<ProfileListener>();
 const audioStateListeners = new Set<AudioStateListener>();
@@ -94,11 +99,14 @@ const roomsByNpub = new Map<string, string[]>();
 const chatMessages = new Map<string, ChatMessage>();
 let chatSessionEpoch = Date.now();
 const textDecoder = new TextDecoder();
+const textEncoder = new TextEncoder();
 
 const remoteSubscriptions = new Map<string, RemoteSubscription>();
 const stateSubscribers = new Set<Moq.Track>();
 const roomsSubscribers = new Set<Moq.Track>();
 const chatSubscribers = new Set<Moq.Track>();
+const stateProducers = new Map<Moq.Track, FrameProducerState>();
+const chatProducers = new Map<Moq.Track, FrameProducerState>();
 const resubscribeTimers = new Map<string, ReturnType<typeof setTimeout>>();
 const resubscribeAttempts = new Map<string, number>();
 const resetErrorCounts = new Map<string, number>();
@@ -499,12 +507,19 @@ function broadcastChat(entry: ChatMessage): void {
     id: entry.id,
   };
 
+  const encoded = textEncoder.encode(JSON.stringify(payload));
   for (const track of [...chatSubscribers]) {
+    const producer = chatProducers.get(track);
+    if (!producer) {
+      removeChatSubscriber(track);
+      continue;
+    }
     try {
-      track.writeJson(payload);
+      producer.producer.encode(encoded, frameTimestamp(), !producer.keyframeSent);
+      producer.keyframeSent = true;
     } catch (error) {
       console.warn("failed to write chat message", error);
-      chatSubscribers.delete(track);
+      removeChatSubscriber(track);
     }
   }
 }
@@ -532,6 +547,75 @@ function updateAudioMix(): void {
 
 function now(): number {
   return typeof performance !== "undefined" ? performance.now() : Date.now();
+}
+
+function frameTimestamp(): number {
+  return Math.floor(Date.now() * 1000);
+}
+
+function parseFrameJson(frame: { data: Uint8Array; timestamp: number }): unknown | null {
+  try {
+    return JSON.parse(textDecoder.decode(frame.data));
+  } catch {
+    const legacy = tryDecodeLegacyFrame(frame);
+    if (!legacy) {
+      return null;
+    }
+    try {
+      return JSON.parse(legacy);
+    } catch {
+      return null;
+    }
+  }
+}
+
+function tryDecodeLegacyFrame(frame: { data: Uint8Array; timestamp: number }): string | null {
+  // Heuristic: old clients wrote JSON directly without Hang frames, which yields very small "timestamps".
+  if (frame.timestamp > 0xffff) {
+    return null;
+  }
+  const header = encodeQuicVarInt(frame.timestamp);
+  if (!header) {
+    return null;
+  }
+  const combined = new Uint8Array(header.length + frame.data.length);
+  combined.set(header, 0);
+  combined.set(frame.data, header.length);
+  try {
+    const text = textDecoder.decode(combined);
+    const trimmed = text.trimStart();
+    if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+      return null;
+    }
+    return text;
+  } catch {
+    return null;
+  }
+}
+
+function encodeQuicVarInt(value: number): Uint8Array | null {
+  if (value < 0) {
+    return null;
+  }
+  if (value <= 0x3f) {
+    return Uint8Array.of(value);
+  }
+  if (value <= 0x3fff) {
+    const buf = new Uint8Array(2);
+    new DataView(buf.buffer).setUint16(0, value | 0x4000);
+    return buf;
+  }
+  if (value <= 0x3fffffff) {
+    const buf = new Uint8Array(4);
+    new DataView(buf.buffer).setUint32(0, value | 0x80000000);
+    return buf;
+  }
+  if (value <= Number.MAX_SAFE_INTEGER) {
+    const buf = new Uint8Array(8);
+    new DataView(buf.buffer).setBigUint64(0, BigInt(value) | 0xc000000000000000n);
+    return buf;
+  }
+  return null;
 }
 
 function stateChanged(a: PlayerState | null, b: PlayerState): boolean {
@@ -918,6 +1002,42 @@ function clearChatEntry(npub: string) {
   }
 }
 
+function removeStateSubscriber(track: Moq.Track) {
+  stateSubscribers.delete(track);
+  const entry = stateProducers.get(track);
+  if (!entry) {
+    return;
+  }
+  stateProducers.delete(track);
+  try {
+    entry.producer.close();
+  } catch {}
+}
+
+function clearStateSubscribers() {
+  for (const track of [...stateSubscribers]) {
+    removeStateSubscriber(track);
+  }
+}
+
+function removeChatSubscriber(track: Moq.Track) {
+  chatSubscribers.delete(track);
+  const entry = chatProducers.get(track);
+  if (!entry) {
+    return;
+  }
+  chatProducers.delete(track);
+  try {
+    entry.producer.close();
+  } catch {}
+}
+
+function clearChatSubscribers() {
+  for (const track of [...chatSubscribers]) {
+    removeChatSubscriber(track);
+  }
+}
+
 function trackProfile(npub: string) {
   if (profileSubscriptions.has(npub)) {
     return;
@@ -997,25 +1117,34 @@ function maybeBroadcastLocal(force = false) {
   lastSentAt = nowMs;
   const payload = serializeState(localState);
 
+  const encoded = textEncoder.encode(JSON.stringify(payload));
   for (const track of [...stateSubscribers]) {
+    const producer = stateProducers.get(track);
+    if (!producer) {
+      removeStateSubscriber(track);
+      continue;
+    }
     try {
-      track.writeJson(payload);
+      producer.producer.encode(encoded, frameTimestamp(), !producer.keyframeSent);
+      producer.keyframeSent = true;
     } catch (error) {
       console.warn("failed to write local state", error);
-      stateSubscribers.delete(track);
+      removeStateSubscriber(track);
     }
   }
 }
 
 function teardownLocalSession() {
   if (!localSession) {
-    stateSubscribers.clear();
+    clearStateSubscribers();
     roomsSubscribers.clear();
+    clearChatSubscribers();
     return;
   }
 
-  stateSubscribers.clear();
+  clearStateSubscribers();
   roomsSubscribers.clear();
+  clearChatSubscribers();
   try {
     localSession.broadcast.close();
   } catch (error) {
@@ -1069,10 +1198,11 @@ function runPublishLoop(broadcast: Moq.Broadcast) {
       if (request.track.name === STATE_TRACK) {
         const track = request.track;
         stateSubscribers.add(track);
+        stateProducers.set(track, { producer: new Hang.Frame.Producer(track), keyframeSent: false });
         track.closed
           .catch(() => undefined)
           .finally(() => {
-            stateSubscribers.delete(track);
+            removeStateSubscriber(track);
           });
         maybeBroadcastLocal(true);
       } else if (request.track.name === ROOMS_TRACK) {
@@ -1087,10 +1217,11 @@ function runPublishLoop(broadcast: Moq.Broadcast) {
       } else if (request.track.name === CHAT_TRACK) {
         const track = request.track;
         chatSubscribers.add(track);
+        chatProducers.set(track, { producer: new Hang.Frame.Producer(track), keyframeSent: false });
         track.closed
           .catch(() => undefined)
           .finally(() => {
-            chatSubscribers.delete(track);
+            removeChatSubscriber(track);
           });
       } else {
         request.track.close(new Error(`Unsupported track ${request.track.name}`));
@@ -1137,9 +1268,9 @@ function handleDisconnected() {
   }
   resubscribeTimers.clear();
   resubscribeAttempts.clear();
-  stateSubscribers.clear();
+  clearStateSubscribers();
   roomsSubscribers.clear();
-  chatSubscribers.clear();
+  clearChatSubscribers();
   clearRemoteSources();
   teardownLocalSession();
   clearRemoteAudioSessions();
@@ -1242,14 +1373,16 @@ function subscribeToRemote(path: Moq.Path.Valid) {
       const frame = await stateConsumer.decode();
       if (!frame) break;
 
-      let state: PlayerState | null = null;
-      try {
-        const payload = JSON.parse(textDecoder.decode(frame.data));
-        state = parseRemoteState(payload);
-      } catch (error) {
-        console.warn("failed to decode remote state", error);
+      const payload = parseFrameJson(frame);
+      if (!payload) {
+        console.warn("failed to decode remote state", {
+          path,
+          timestamp: frame.timestamp,
+          size: frame.data.byteLength,
+        });
         continue;
       }
+      const state = parseRemoteState(payload);
       if (!state) {
         continue;
       }
@@ -1336,13 +1469,16 @@ function subscribeToRemote(path: Moq.Path.Valid) {
       for (;;) {
         const frame = await chatConsumer.decode();
         if (!frame) break;
-        let parsed: { npub: string; message: string; ts: number; id: string } | undefined;
-        try {
-          parsed = parseChatPayload(JSON.parse(textDecoder.decode(frame.data)));
-        } catch (error) {
-          console.warn("failed to decode chat payload", error);
+        const payload = parseFrameJson(frame);
+        if (!payload) {
+          console.warn("failed to decode chat payload", {
+            path,
+            timestamp: frame.timestamp,
+            size: frame.data.byteLength,
+          });
           continue;
         }
+        const parsed = parseChatPayload(payload);
         if (!parsed) continue;
         const expiresAt = Math.max(parsed.ts, Date.now()) + CHAT_TTL_MS;
         const entry: ChatMessage = {
