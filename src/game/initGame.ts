@@ -877,6 +877,10 @@ export async function initGame(app: Application, store: GameStore): Promise<Game
     const resolved = resolveLocalAvatarUrl();
     localResolvedAvatar = resolved;
     setAvatarOnSlot(localHeadSlot, resolved);
+    const identity = currentLocalNpub ?? store.getSnapshot().localPlayer?.npub ?? null;
+    if (identity) {
+      trackProfile(identity);
+    }
   };
 
   const destroy = () => {
