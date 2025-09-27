@@ -66,19 +66,30 @@ async function loadSprite(url: string): Promise<AvatarDisplayInstance> {
 
   const image = await new Promise<HTMLImageElement>((resolve, reject) => {
     const img = new Image();
+    if (!sanitized.startsWith("data:")) {
+      img.crossOrigin = "anonymous";
+    }
     img.onload = () => resolve(img);
     img.onerror = () => reject(new Error(`Failed to load avatar image at ${sanitized}`));
     img.src = sanitized;
   });
 
-  let canvasUrl = sanitized;
-  try {
-    canvasUrl = canvasKeyFromImage(image, sanitized) ?? sanitized;
-  } catch {
-    canvasUrl = sanitized;
+  let texture: Texture | null = null;
+  if (!sanitized.startsWith("data:")) {
+    try {
+      const canvasUrl = canvasKeyFromImage(image, sanitized);
+      if (canvasUrl) {
+        texture = await Assets.load<Texture>(canvasUrl);
+      }
+    } catch {
+      texture = null;
+    }
   }
 
-  const texture = await Assets.load<Texture>(canvasUrl);
+  if (!texture) {
+    texture = Texture.from(image);
+  }
+
   if (texture.source?.style) {
     texture.source.style.scaleMode = SCALE_MODES.LINEAR;
   }
