@@ -60,6 +60,7 @@ export const Dpad: Component<DpadProps> = (props) => {
         onPointerUp={createDpadReleaseHandler("up")}
         onPointerLeave={createDpadReleaseHandler("up")}
         onPointerCancel={createDpadReleaseHandler("up")}
+        onContextMenu={event => event.preventDefault()}
       >
         ↑
       </button>
@@ -71,6 +72,7 @@ export const Dpad: Component<DpadProps> = (props) => {
           onPointerUp={createDpadReleaseHandler("left")}
           onPointerLeave={createDpadReleaseHandler("left")}
           onPointerCancel={createDpadReleaseHandler("left")}
+          onContextMenu={event => event.preventDefault()}
         >
           ←
         </button>
@@ -81,6 +83,7 @@ export const Dpad: Component<DpadProps> = (props) => {
           onPointerUp={createDpadReleaseHandler("right")}
           onPointerLeave={createDpadReleaseHandler("right")}
           onPointerCancel={createDpadReleaseHandler("right")}
+          onContextMenu={event => event.preventDefault()}
         >
           →
         </button>
@@ -92,6 +95,7 @@ export const Dpad: Component<DpadProps> = (props) => {
         onPointerUp={createDpadReleaseHandler("down")}
         onPointerLeave={createDpadReleaseHandler("down")}
         onPointerCancel={createDpadReleaseHandler("down")}
+        onContextMenu={event => event.preventDefault()}
       >
         ↓
       </button>

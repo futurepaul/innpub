@@ -1,4 +1,4 @@
-import { getDisplayName } from "applesauce-core/helpers";
+import { getDisplayName, getProfilePicture } from "applesauce-core/helpers";
 import { npubEncode } from "nostr-tools/nip19";
 import { manager } from "./nostr/accounts";
 import { Application } from "pixi.js";
@@ -6,14 +6,12 @@ import {
   createEffect,
   createMemo,
   createSignal,
-  For,
   from,
   onCleanup,
   Show,
   type Component,
 } from "solid-js";
-
-import { Console, Dpad, Header, Login } from "./components";
+import { Console, Dpad, Header, Login, PlayersDrawer } from "./components";
 import { initGame, type GameInstance } from "./game/initGame";
 import "./index.css";
 import { createObservableSignal } from "./ui/useObservable";
@@ -33,19 +31,9 @@ import {
 import {
   type AudioState,
   type ChatEntry,
-  type HeadBounds,
   type PlayerProfileEntry,
   type RemotePlayerState,
 } from "./game/state";
-
-interface OverlayEntry {
-  npub: string;
-  rect: HeadBounds["rect"];
-  name: string;
-  avatar: string;
-  speakingLevel: number;
-  chat?: ChatEntry;
-}
 
 export const App: Component = () => {
   let containerRef: HTMLDivElement | undefined;
@@ -59,14 +47,14 @@ export const App: Component = () => {
   const pubkey = createMemo(() => activeAccount()?.pubkey?.toLowerCase() ?? null);
   const [npub, setNpub] = createSignal<string | null>(null);
   const [localAlias, setLocalAlias] = createSignal<string | null>(null);
+  const [isPlayersDrawerOpen, setIsPlayersDrawerOpen] = createSignal(false);
 
   const audioState = createObservableSignal<AudioState>(gameStore.audio$, gameStore.getSnapshot().audio);
   const chatMap = createObservableSignal<ReadonlyMap<string, ChatEntry>>(gameStore.chat$, gameStore.getSnapshot().chat);
   const profileMap = createObservableSignal<ReadonlyMap<string, PlayerProfileEntry>>(gameStore.profiles$, gameStore.getSnapshot().profiles);
-  const remotePlayers = createObservableSignal<ReadonlyMap<string, RemotePlayerState>>(gameStore.remotePlayers$, gameStore.getSnapshot().remotePlayers);
-  const headBounds = createObservableSignal<ReadonlyMap<string, HeadBounds>>(gameStore.headBounds$, gameStore.getSnapshot().headBounds);
   const logsSignal = createObservableSignal(gameStore.logs$, gameStore.getSnapshot().logs);
   const localPlayerSignal = createObservableSignal(gameStore.localPlayer$, gameStore.getSnapshot().localPlayer);
+  const remotePlayers = createObservableSignal<ReadonlyMap<string, RemotePlayerState>>(gameStore.remotePlayers$, gameStore.getSnapshot().remotePlayers);
 
   const logMessages = createMemo(() => logsSignal().map(entry => entry.message));
 
@@ -78,6 +66,14 @@ export const App: Component = () => {
     if (!pk) {
       return null;
     }
+
+    const profileEntry = profileMap().get(pk);
+    const profile = profileEntry?.profile;
+    const profilePicture = profile ? getProfilePicture(profile) : undefined;
+    if (profilePicture) {
+      return profilePicture;
+    }
+
     return getProfilePictureUrl(pk) ?? null;
   });
 
@@ -151,48 +147,6 @@ export const App: Component = () => {
     }
   });
 
-  const overlayEntries = createMemo<OverlayEntry[]>(() => {
-    const bounds = headBounds();
-    const remote = remotePlayers();
-    const profiles = profileMap();
-    const chats = chatMap();
-    const localPlayer = localPlayerSignal();
-    const localNpub = localPlayer?.npub ?? null;
-    const localAvatar = avatarUrl();
-    const alias = localAlias();
-
-    const entries: OverlayEntry[] = [];
-    bounds.forEach((value, npubKey) => {
-      const isLocal = localNpub ? npubKey === localNpub : false;
-      const remoteState = remote.get(npubKey);
-      const speakingLevel = isLocal ? localPlayer?.speakingLevel ?? 0 : remoteState?.speakingLevel ?? 0;
-
-      let display = profiles.get(npubKey)?.profile ? getDisplayName(profiles.get(npubKey)!.profile!) : `${npubKey.slice(0, 12)}…`;
-      if (isLocal) {
-        if (alias) {
-          display = alias;
-        } else if (npub()) {
-          display = `${npub()!.slice(0, 12)}…`;
-        }
-      }
-
-      const resolvedAvatar =
-        (isLocal ? localAvatar ?? undefined : getProfilePictureUrl(npubKey) ?? undefined) ??
-        `https://robohash.org/${npubKey}.png`;
-
-      entries.push({
-        npub: npubKey,
-        rect: value.rect,
-        name: display ?? "Player",
-        avatar: resolvedAvatar,
-        speakingLevel,
-        chat: chats.get(npubKey),
-      });
-    });
-
-    return entries;
-  });
-
   const handleLogout = () => {
     manager.clearActive();
   };
@@ -208,7 +162,9 @@ export const App: Component = () => {
 
     const parent = containerRef.parentElement as HTMLElement | null;
     const availableWidth = parent ? parent.clientWidth : window.innerWidth;
-    const maxHeight = Math.max(240, window.innerHeight * 0.6);
+    const pointerFine = window.matchMedia?.("(pointer: fine)").matches ?? false;
+    const heightRatio = pointerFine ? 0.88 : 0.7;
+    const maxHeight = Math.max(240, window.innerHeight * heightRatio);
 
     let targetWidth = availableWidth;
     let targetHeight = targetWidth / desiredAspect;
@@ -294,44 +250,22 @@ export const App: Component = () => {
           profileMap={profileMap()}
           audioState={audioState()}
           onLogout={handleLogout}
+          onTogglePlayersDrawer={() => setIsPlayersDrawerOpen(!isPlayersDrawerOpen())}
         />
 
         <div class="game-container">
           <div class="game-surface" ref={containerRef}>
-            <div class="game-overlays">
-              <div class="player-overlays">
-                <For each={overlayEntries()}>
-                  {entry => (
-                    <div
-                      class={`avatar-head${entry.speakingLevel > 0.02 ? " is-speaking" : ""}`}
-                      style={{
-                        width: `${entry.rect.width}px`,
-                        height: `${entry.rect.height}px`,
-                        transform: `translate3d(${entry.rect.x}px, ${entry.rect.y}px, 0)`,
-                      }}
-                    >
-                      <img src={entry.avatar} alt={entry.name} />
-                      <div class="avatar-head__label">
-                        <span>{entry.name}</span>
-                        <Show when={entry.chat}>
-                          <span class="avatar-head__chat">{entry.chat!.message}</span>
-                        </Show>
-                      </div>
-                    </div>
-                  )}
-                </For>
-              </div>
-            </div>
+          </div>
+          <div class="game-console-overlay">
+            <Console
+              isLoggedIn={!showLoginOverlay()}
+              logMessages={logMessages()}
+              onAppendLog={message => gameStore.logInfo(message)}
+              onSetInputCaptured={captured => gameStore.dispatch({ type: "set-input-captured", captured })}
+              onSpawn={requestSpawn}
+            />
           </div>
         </div>
-
-        <Console
-          isLoggedIn={!showLoginOverlay()}
-          logMessages={logMessages()}
-          onAppendLog={message => gameStore.logInfo(message)}
-          onSetInputCaptured={captured => gameStore.dispatch({ type: "set-input-captured", captured })}
-          onSpawn={requestSpawn}
-        />
       </div>
 
       <div class="app-sidebar">
@@ -340,6 +274,12 @@ export const App: Component = () => {
         </Show>
         <Dpad visible={!showLoginOverlay()} />
       </div>
+      <PlayersDrawer
+        isOpen={isPlayersDrawerOpen()}
+        onClose={() => setIsPlayersDrawerOpen(false)}
+        players={Array.from(remotePlayers().values())}
+        currentPlayerNpub={pubkey()}
+      />
     </div>
   );
 };

@@ -1,4 +1,4 @@
-import { getDisplayName } from "applesauce-core/helpers";
+import { getDisplayName, getProfilePicture } from "applesauce-core/helpers";
 import { createMemo, Show, type Component } from "solid-js";
 
 import { getProfilePictureUrl, setMicEnabled, setSpeakerEnabled } from "../game/service";
@@ -11,6 +11,7 @@ export interface HeaderProps {
   profileMap: ReadonlyMap<string, PlayerProfileEntry>;
   audioState: AudioState;
   onLogout: () => void;
+  onTogglePlayersDrawer: () => void;
 }
 
 export const Header: Component<HeaderProps> = (props) => {
@@ -56,6 +57,13 @@ export const Header: Component<HeaderProps> = (props) => {
     if (!pk) {
       return null;
     }
+
+    const profile = localProfile();
+    const profilePicture = profile ? getProfilePicture(profile) : undefined;
+    if (profilePicture) {
+      return profilePicture;
+    }
+
     return getProfilePictureUrl(pk) ?? null;
   });
 
@@ -63,12 +71,15 @@ export const Header: Component<HeaderProps> = (props) => {
     <header class="status-bar">
       <Show
         when={props.pubkey}
-        fallback={
-          <div class="status-strip status-strip--placeholder">Sign in to explore the InnPub.</div>
-        }
+        fallback={<div class="status-strip status-strip--placeholder">Sign in to explore the InnPub.</div>}
       >
         <div class="status-strip">
-          <div class="status-strip__identity">
+          <button
+            type="button"
+            class="status-strip__identity"
+            onClick={props.onLogout}
+            title="Tap to log out"
+          >
             <Show
               when={avatarUrl()}
               fallback={<div class="status-strip__avatar status-strip__avatar--placeholder" />}
@@ -81,7 +92,7 @@ export const Header: Component<HeaderProps> = (props) => {
                 {displayName() ?? (props.npub ? `${props.npub.slice(0, 12)}…` : "Guest")}
               </span>
             </div>
-          </div>
+          </button>
           <div class="status-strip__controls">
             <button
               type="button"
@@ -98,8 +109,8 @@ export const Header: Component<HeaderProps> = (props) => {
             >
               {props.audioState.speakerEnabled ? "Speaker On" : "Speaker Off"}
             </button>
-            <button type="button" class="status-strip__btn status-strip__btn--ghost" onClick={props.onLogout}>
-              Logout
+            <button type="button" class="status-strip__btn" onClick={props.onTogglePlayersDrawer}>
+              Players
             </button>
           </div>
           <Show when={props.audioState.micError}>
@@ -110,4 +121,3 @@ export const Header: Component<HeaderProps> = (props) => {
     </header>
   );
 };
-
