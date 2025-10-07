@@ -40,8 +40,31 @@ export const App: Component = () => {
   let gameInstance: GameInstance | null = null;
   let cleanupRenderer: (() => void) | undefined;
   let disposed = false;
+  let hasTriedMicPermission = false;
 
   startGameServices();
+
+  // Try to enable microphone on first user interaction
+  const handleFirstInteraction = () => {
+    if (hasTriedMicPermission) return;
+    hasTriedMicPermission = true;
+
+    // Try to enable mic (will fail gracefully if not logged in)
+    void setMicEnabled(true).catch(error => {
+      // This is expected to fail if not logged in yet, that's fine
+      console.debug("Mic permission request on first interaction:", error.message);
+    });
+
+    // Remove listeners after first attempt
+    document.removeEventListener("click", handleFirstInteraction);
+    document.removeEventListener("keydown", handleFirstInteraction);
+  };
+
+  // Register listeners for first interaction
+  if (typeof document !== "undefined") {
+    document.addEventListener("click", handleFirstInteraction);
+    document.addEventListener("keydown", handleFirstInteraction);
+  }
 
   const activeAccount = from(manager.active$);
   const pubkey = createMemo(() => activeAccount()?.pubkey?.toLowerCase() ?? null);
@@ -230,6 +253,11 @@ export const App: Component = () => {
     disposed = true;
     cleanupRenderer?.();
     window.removeEventListener("resize", resizeViewport);
+    // Clean up first interaction listeners
+    if (typeof document !== "undefined") {
+      document.removeEventListener("click", handleFirstInteraction);
+      document.removeEventListener("keydown", handleFirstInteraction);
+    }
     if (canvasAttached && app.renderer && app.canvas.parentElement === containerRef) {
       containerRef?.removeChild(app.canvas);
     }
