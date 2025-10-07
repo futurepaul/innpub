@@ -77,6 +77,7 @@ type RemoteAudioSession = {
   npub?: string;
   broadcast: Hang.Watch.Broadcast;
   emitter: Hang.Watch.Audio.Emitter;
+  volume: Signal<number>;
   disposeSpeaking?: () => void;
 };
 
@@ -313,6 +314,11 @@ const hangBroadcastPath = new Signal<Moq.Path.Valid | undefined>(undefined);
 const hangPublishEnabled = new Signal(false);
 const roomAudioSubscriptions = new Map<string, RoomAudioSubscription>();
 const remoteAudioSessions = new Map<Moq.Path.Valid, RemoteAudioSession>();
+
+const DEFAULT_REMOTE_VOLUME = 0.5;
+const MIN_AUDIBLE_VOLUME = 0.001;
+const FULL_VOLUME_DISTANCE = 64;
+const MAX_AUDIO_DISTANCE = 512;
 
 const AUDIO_SESSION_SUFFIX = Math.random().toString(36).slice(2, 8);
 const hangPublish =
@@ -617,9 +623,11 @@ function handleRemoteAudioAdded(room: string, path: Moq.Path.Valid, broadcast: H
   }
 
   const { npub } = parsed;
+  const volume = new Signal(DEFAULT_REMOTE_VOLUME);
   const emitter = new Hang.Watch.Audio.Emitter(broadcast.audio, {
     muted: !speakerEnabled,
     paused: !speakerEnabled,
+    volume,
   });
 
   const session: RemoteAudioSession = {
@@ -628,6 +636,7 @@ function handleRemoteAudioAdded(room: string, path: Moq.Path.Valid, broadcast: H
     npub,
     broadcast,
     emitter,
+    volume,
   };
 
   session.disposeSpeaking = broadcast.audio.speaking.active.watch(active => {
@@ -645,6 +654,7 @@ function handleRemoteAudioAdded(room: string, path: Moq.Path.Valid, broadcast: H
   broadcast.audio.enabled.set(speakerEnabled && localRooms.includes(room));
 
   remoteAudioSessions.set(path, session);
+  updateAudioMix();
 }
 
 function handleRemoteAudioRemoved(path: Moq.Path.Valid) {
@@ -658,6 +668,7 @@ function handleRemoteAudioRemoved(path: Moq.Path.Valid) {
   if (session.npub) {
     clearSpeakingLevel(session.npub);
   }
+  updateAudioMix();
 }
 
 function clearRemoteAudioSessions() {
@@ -683,11 +694,19 @@ function updateRoomAudioSubscriptions() {
 }
 
 function syncRemoteAudioPlayback() {
+  const local = localState;
   for (const session of remoteAudioSessions.values()) {
     const shouldPlay = speakerEnabled && localRooms.includes(session.room);
     session.broadcast.audio.enabled.set(shouldPlay);
     session.emitter.paused.set(!speakerEnabled || !shouldPlay);
     session.emitter.muted.set(!speakerEnabled || !shouldPlay);
+
+    if (!shouldPlay) {
+      continue;
+    }
+
+    const targetVolume = computeSessionVolume(session, local);
+    session.volume.set(targetVolume);
   }
 }
 
@@ -750,6 +769,63 @@ function pruneChatMessages() {
 
 function updateAudioMix(): void {
   syncRemoteAudioPlayback();
+}
+
+function computeSessionVolume(session: RemoteAudioSession, local: PlayerState | null): number {
+  if (!local) {
+    return DEFAULT_REMOTE_VOLUME;
+  }
+
+  if (!session.npub) {
+    return DEFAULT_REMOTE_VOLUME;
+  }
+
+  const remote = players.get(session.npub);
+  if (!remote) {
+    return DEFAULT_REMOTE_VOLUME;
+  }
+
+  if (remote.rooms && remote.rooms.length > 0 && !remote.rooms.includes(session.room)) {
+    return MIN_AUDIBLE_VOLUME;
+  }
+
+  if (local.rooms && local.rooms.length > 0 && !local.rooms.includes(session.room)) {
+    return MIN_AUDIBLE_VOLUME;
+  }
+
+  const distance = measureDistance(local, remote);
+  if (!Number.isFinite(distance)) {
+    return DEFAULT_REMOTE_VOLUME;
+  }
+
+  if (distance <= FULL_VOLUME_DISTANCE) {
+    return DEFAULT_REMOTE_VOLUME;
+  }
+
+  if (distance >= MAX_AUDIO_DISTANCE) {
+    return MIN_AUDIBLE_VOLUME;
+  }
+
+  const normalized = (distance - FULL_VOLUME_DISTANCE) / (MAX_AUDIO_DISTANCE - FULL_VOLUME_DISTANCE);
+  const attenuation = 1 - normalized;
+  const volume = DEFAULT_REMOTE_VOLUME * attenuation;
+  return clampVolume(volume);
+}
+
+function measureDistance(a: PlayerState, b: PlayerState): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  return Math.hypot(dx, dy);
+}
+
+function clampVolume(value: number): number {
+  if (!Number.isFinite(value) || value >= DEFAULT_REMOTE_VOLUME) {
+    return DEFAULT_REMOTE_VOLUME;
+  }
+  if (value <= MIN_AUDIBLE_VOLUME) {
+    return MIN_AUDIBLE_VOLUME;
+  }
+  return value;
 }
 
 function now(): number {
@@ -1016,6 +1092,7 @@ function clearRooms(npub: string): void {
 
 function addSourceState(sourceKey: string, state: PlayerState) {
   const previous = stateBySource.get(sourceKey);
+  let previousForChange = previous;
   if (previous && previous.npub !== state.npub) {
     const prevSources = sourcesByNpub.get(previous.npub);
     if (prevSources) {
@@ -1035,9 +1112,11 @@ function addSourceState(sourceKey: string, state: PlayerState) {
         }
       }
     }
+    previousForChange = null;
   }
 
   const enriched = withSpeakingLevel(withRooms(state));
+  const changed = stateChanged(previousForChange ?? null, enriched);
   stateBySource.set(sourceKey, enriched);
   let bucket = sourcesByNpub.get(state.npub);
   if (!bucket) {
@@ -1048,6 +1127,9 @@ function addSourceState(sourceKey: string, state: PlayerState) {
   players.set(state.npub, enriched);
   trackProfile(state.npub);
   syncPlayersToStore();
+  if (changed) {
+    updateAudioMix();
+  }
 }
 
 function removeSource(sourceKey: string) {
