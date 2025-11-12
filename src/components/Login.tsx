@@ -3,7 +3,7 @@ import { ExtensionAccount, NostrConnectAccount, ReadonlyAccount } from "applesau
 import { getDisplayName, normalizeToPubkey } from "applesauce-core/helpers";
 import { NostrConnectSigner, ReadonlySigner } from "applesauce-signers";
 import { npubEncode } from "nostr-tools/nip19";
-import { createMemo, createSignal, For, from, Show, type Component } from "solid-js";
+import { createEffect, createMemo, createSignal, For, from, onCleanup, Show, type Component } from "solid-js";
 import { manager } from "../nostr/accounts";
 import { eventStore } from "../nostr/client";
 
@@ -28,9 +28,38 @@ const QRCode: Component<{ data: string }> = (props) => (
 const ExtensionLoginButton: Component = () => {
   const [isConnecting, setIsConnecting] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+  const [hasExtension, setHasExtension] = createSignal(false);
 
-  // Check if NIP-07 extension is available
-  const hasNostrExtension = () => typeof window !== 'undefined' && 'nostr' in window;
+  // Poll for NIP-07 extension availability (extensions load asynchronously)
+  createEffect(() => {
+    // Initial check
+    if (typeof window !== 'undefined' && 'nostr' in window) {
+      setHasExtension(true);
+      return;
+    }
+
+    // Poll for extension with exponential backoff
+    const intervals = [100, 200, 400, 800, 1600];
+    let timeoutIds: ReturnType<typeof setTimeout>[] = [];
+
+    let totalDelay = 0;
+    for (const interval of intervals) {
+      totalDelay += interval;
+      const timeoutId = setTimeout(() => {
+        if (typeof window !== 'undefined' && 'nostr' in window) {
+          setHasExtension(true);
+          // Clear remaining timeouts
+          timeoutIds.forEach(id => clearTimeout(id));
+          timeoutIds = [];
+        }
+      }, totalDelay);
+      timeoutIds.push(timeoutId);
+    }
+
+    onCleanup(() => {
+      timeoutIds.forEach(id => clearTimeout(id));
+    });
+  });
 
   const handleExtensionLogin = async () => {
     setIsConnecting(true);
@@ -61,7 +90,7 @@ const ExtensionLoginButton: Component = () => {
   };
 
   // Don't render if no extension available
-  if (!hasNostrExtension()) {
+  if (!hasExtension()) {
     return null;
   }
 

@@ -104,6 +104,10 @@ let chatSessionEpoch = Date.now();
 const textDecoder = new TextDecoder();
 const textEncoder = new TextEncoder();
 
+// Store recently removed player states for recovery when audio persists
+const recentlyRemovedStates = new Map<string, { state: PlayerState; removedAt: number }>();
+const RECOVERY_WINDOW_MS = 30000; // Keep removed states for 30 seconds
+
 const remoteSubscriptions = new Map<string, RemoteSubscription>();
 const stateSubscribers = new Set<Moq.Track>();
 const roomsSubscribers = new Set<Moq.Track>();
@@ -244,6 +248,10 @@ function handleLoginCommand(npub: string, alias: string | null): void {
 
   if (normalized) {
     trackProfile(normalized);
+    // Eagerly establish local session to enable microphone functionality
+    void ensureLocalSession(normalized).catch(error => {
+      console.error("Failed to establish session during login", error);
+    });
   }
 
   const snapshot = gameStore.getSnapshot();
@@ -359,6 +367,12 @@ const RESUBSCRIBE_MAX_DELAY_MS = 8000;
 const RESUBSCRIBE_JITTER_RATIO = 0.35;
 const MAX_RESUBSCRIBE_ATTEMPTS = 10;
 const MAX_RESET_LOGS = 5;
+
+// Subscribe to latest data only, not historical playback
+// Using Number.MAX_SAFE_INTEGER tells MoQ to join at the current/latest group
+// This prevents replaying old position data when joining a room
+const SUBSCRIBE_LATEST_GROUP = Number.MAX_SAFE_INTEGER;
+
 export interface AudioControlState {
   micEnabled: boolean;
   speakerEnabled: boolean;
@@ -619,6 +633,18 @@ function handleRemoteAudioAdded(room: string, path: Moq.Path.Valid, broadcast: H
   }
 
   const { npub } = parsed;
+
+  // If player doesn't exist but was recently removed, restore with last known state
+  if (npub && !players.has(npub)) {
+    const recovered = recentlyRemovedStates.get(npub);
+    if (recovered) {
+      console.info(`Recovering player ${npub} - audio persists but state stream was lost`);
+      const recoverySourceKey = `recovery:${npub}:${Date.now()}`;
+      addSourceState(recoverySourceKey, recovered.state);
+      recentlyRemovedStates.delete(npub);
+    }
+  }
+
   const emitter = new Hang.Watch.Audio.Emitter(broadcast.audio, {
     muted: !speakerEnabled,
     paused: !speakerEnabled,
@@ -1135,6 +1161,14 @@ function removeSource(sourceKey: string) {
     return;
   }
 
+  // Store removed state for potential recovery if audio persists
+  if (existing.npub) {
+    recentlyRemovedStates.set(existing.npub, {
+      state: { ...existing },
+      removedAt: Date.now(),
+    });
+  }
+
   stateBySource.delete(sourceKey);
   const bucket = sourcesByNpub.get(existing.npub);
   if (bucket) {
@@ -1617,7 +1651,8 @@ function subscribeToRemote(path: Moq.Path.Valid) {
 
   let stateTrack: Moq.Track;
   try {
-    stateTrack = broadcast.subscribe(STATE_TRACK, 0);
+    // Subscribe to latest group to avoid replaying historical position data
+    stateTrack = broadcast.subscribe(STATE_TRACK, SUBSCRIBE_LATEST_GROUP);
     clearResetErrorCounts(`${path}:${STATE_TRACK}`);
   } catch (error) {
     logTrackSubscribeFailure(path, STATE_TRACK, error);
@@ -1699,7 +1734,8 @@ function subscribeToRemote(path: Moq.Path.Valid) {
     .finally(() => stateConsumer.close());
 
   try {
-    const roomsTrack = broadcast.subscribe(ROOMS_TRACK, 0);
+    // Subscribe to latest group to get current room state only
+    const roomsTrack = broadcast.subscribe(ROOMS_TRACK, SUBSCRIBE_LATEST_GROUP);
     clearResetErrorCounts(`${path}:${ROOMS_TRACK}`);
     subscription.roomsTrack = roomsTrack;
     roomsTrack.closed
@@ -1740,7 +1776,8 @@ function subscribeToRemote(path: Moq.Path.Valid) {
   }
 
   try {
-    const chatTrack = broadcast.subscribe(CHAT_TRACK, 0);
+    // Subscribe to latest group to get current chat only
+    const chatTrack = broadcast.subscribe(CHAT_TRACK, SUBSCRIBE_LATEST_GROUP);
     clearResetErrorCounts(`${path}:${CHAT_TRACK}`);
     subscription.chatTrack = chatTrack;
     chatTrack.closed
@@ -1943,6 +1980,16 @@ async function startMicrophoneCapture(): Promise<void> {
     setAudioState({ micEnabled: false, micError: message });
     throw new Error(message);
   }
+
+  // Ensure local session exists before attempting to capture microphone
+  try {
+    await ensureLocalSession(identity);
+  } catch (error) {
+    const message = "Failed to establish connection before enabling microphone";
+    setAudioState({ micEnabled: false, micError: message });
+    throw new Error(message);
+  }
+
   ensureBeforeUnloadHook();
   micRequested = true;
   try {
@@ -1970,6 +2017,33 @@ async function stopMicrophoneCapture(force = false): Promise<void> {
   setAudioState({ micEnabled: false, micError: null });
 }
 
+function reconcileAudioAndState() {
+  const now = Date.now();
+
+  // Clean up old recovery states
+  for (const [npub, entry] of recentlyRemovedStates) {
+    if (now - entry.removedAt > RECOVERY_WINDOW_MS) {
+      recentlyRemovedStates.delete(npub);
+    }
+  }
+
+  // Check for orphaned audio sessions (audio without player state)
+  for (const session of remoteAudioSessions.values()) {
+    if (!session.npub) continue;
+
+    // If audio exists but player doesn't, and we have a recent state, try recovery
+    if (!players.has(session.npub)) {
+      const recovered = recentlyRemovedStates.get(session.npub);
+      if (recovered) {
+        console.warn(`Detected orphaned audio for ${session.npub}, attempting recovery`);
+        const recoverySourceKey = `recovery:${session.npub}:${Date.now()}`;
+        addSourceState(recoverySourceKey, recovered.state);
+        recentlyRemovedStates.delete(session.npub);
+      }
+    }
+  }
+}
+
 function startPruneTimer() {
   if (pruneTimerId !== null) {
     return;
@@ -1978,6 +2052,7 @@ function startPruneTimer() {
   pruneTimerId = scheduler(() => {
     pruneRemoteSubscriptions();
     pruneChatMessages();
+    reconcileAudioAndState();
   }, 1000);
 }
 

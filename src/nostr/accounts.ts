@@ -27,13 +27,14 @@ manager.accounts$.subscribe(() => {
   localStorage.setItem("accounts", JSON.stringify(manager.toJSON()));
 });
 
-// load active account from storage
-try {
-  const active = localStorage.getItem("active");
-  if (active) manager.setActive(active);
-} catch (error) {
-  console.error("Error loading active account from localStorage", error);
-}
+// Don't auto-load active account - require user interaction for mic permission
+// Accounts are still saved and can be quickly selected from the login screen
+// try {
+//   const active = localStorage.getItem("active");
+//   if (active) manager.setActive(active);
+// } catch (error) {
+//   console.error("Error loading active account from localStorage", error);
+// }
 
 // subscribe to active changes
 manager.active$.subscribe((account) => {
